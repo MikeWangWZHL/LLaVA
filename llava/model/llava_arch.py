@@ -256,7 +256,7 @@ class LlavaMetaForCausalLM(ABC):
                     p.requires_grad = False
 
 ###################################################################
-
+import copy
 class LlavaGeoMetaForCausalLM(ABC):
 
     @abstractmethod
@@ -267,7 +267,9 @@ class LlavaGeoMetaForCausalLM(ABC):
         return self.get_model().get_vision_tower()
 
     def encode_images(self, images):
+        print("images.shape:", images.shape)
         image_features = self.get_model().get_vision_tower()(images)
+        print("image_features.shape:", image_features.shape)
         image_features = self.get_model().mm_projector(image_features)
         return image_features
 
@@ -282,8 +284,10 @@ class LlavaGeoMetaForCausalLM(ABC):
 
 
         # set the select_feature to cls_patch
-        _select_feature_arg = self.get_model().get_vision_tower().select_feature
+        _select_feature_arg = self.get_model().config.mm_vision_select_feature
         self.get_model().get_vision_tower().select_feature = "cls_patch"
+        print("select feature:", self.get_model().get_vision_tower().select_feature)
+        
 
         if type(images) is list or images.ndim == 5:
             concat_images = torch.cat([image for image in images], dim=0)
@@ -298,6 +302,7 @@ class LlavaGeoMetaForCausalLM(ABC):
 
         # set the select_feature back to the original value
         self.get_model().get_vision_tower().select_feature = _select_feature_arg
+        print("select feature:", self.get_model().get_vision_tower().select_feature)
 
         new_input_embeds = []
         new_labels = [] if labels is not None else None
