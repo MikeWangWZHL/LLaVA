@@ -1,32 +1,33 @@
 #!/bin/bash
+LLAVA_FINETUNE_DATA_DIR="/data/wangz3/projects/llava_data/LLaVA-Pretrain"
 
-LLAVA_FINETUNE_DATA_DIR="/data/wangz3/projects/llava_data"
+SAVE_PER_STEPS=9000 # 24000
+LR=1e-4 # 1e-3
 
-
-CUDA_VISIBLE_DEVICES=4 deepspeed llava/train/train_mem.py \
-    --deepspeed ./scripts/zero3.json \
+# deepspeed --include localhost:1,2 llava/train/train_mem.py \
+deepspeed --include localhost:1,2 llava/train/train_mem.py \
+    --deepspeed ./scripts/zero2.json \
     --model_name_or_path liuhaotian/llava-v1.5-7b \
-    --version v1 \
-    --data_path ${LLAVA_FINETUNE_DATA_DIR}/llava_v1_5_mix665k.json \
-    --image_folder ${LLAVA_FINETUNE_DATA_DIR} \
+    --version plain \
+    --data_path ${LLAVA_FINETUNE_DATA_DIR}/blip_laion_cc_sbu_558k.json \
+    --image_folder ${LLAVA_FINETUNE_DATA_DIR}/images \
     --vision_tower openai/clip-vit-large-patch14-336 \
     --mm_projector_type mlp2x_gelu \
+    --tune_mm_mlp_adapter True \
     --mm_vision_select_layer -2 \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \
-    --image_aspect_ratio pad \
-    --group_by_modality_length True \
     --bf16 True \
-    --output_dir ./checkpoints/test \
+    --output_dir ./checkpoints/llava_geo_7b/pretrain_v0 \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 16 \
+    --per_device_train_batch_size 32 \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 1 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 50000 \
+    --save_steps ${SAVE_PER_STEPS} \
     --save_total_limit 1 \
-    --learning_rate 2e-5 \
+    --learning_rate ${LR} \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
@@ -36,36 +37,34 @@ CUDA_VISIBLE_DEVICES=4 deepspeed llava/train/train_mem.py \
     --gradient_checkpointing True \
     --dataloader_num_workers 4 \
     --lazy_preprocess True \
-    --report_to wandb
-    # --pretrain_mm_mlp_adapter ./checkpoints/llava-v1.5-13b-pretrain/mm_projector.bin \
-
-
+    --report_to wandb \
+    --model_type llava_geo \
+    --llava_geo_config_path ./llava/train/llava_geo_configs/llava_geo_v1.json \
+    --tune_mae_decoder True
 
 # deepspeed llava/train/train_mem.py \
-#     --deepspeed ./scripts/zero3.json \
+#     --deepspeed ./scripts/zero2.json \
 #     --model_name_or_path lmsys/vicuna-13b-v1.5 \
-#     --version v1 \
-#     --data_path ./playground/data/llava_v1_5_mix665k.json \
-#     --image_folder ./playground/data \
+#     --version plain \
+#     --data_path ./playground/data/LLaVA-Pretrain/blip_laion_cc_sbu_558k.json \
+#     --image_folder ./playground/data/LLaVA-Pretrain/images \
 #     --vision_tower openai/clip-vit-large-patch14-336 \
-#     --pretrain_mm_mlp_adapter ./checkpoints/llava-v1.5-13b-pretrain/mm_projector.bin \
 #     --mm_projector_type mlp2x_gelu \
+#     --tune_mm_mlp_adapter True \
 #     --mm_vision_select_layer -2 \
 #     --mm_use_im_start_end False \
 #     --mm_use_im_patch_token False \
-#     --image_aspect_ratio pad \
-#     --group_by_modality_length True \
 #     --bf16 True \
-#     --output_dir ./checkpoints/llava-v1.5-13b \
+#     --output_dir ./checkpoints/llava-v1.5-13b-pretrain \
 #     --num_train_epochs 1 \
-#     --per_device_train_batch_size 16 \
+#     --per_device_train_batch_size 32 \
 #     --per_device_eval_batch_size 4 \
 #     --gradient_accumulation_steps 1 \
 #     --evaluation_strategy "no" \
 #     --save_strategy "steps" \
-#     --save_steps 50000 \
+#     --save_steps 24000 \
 #     --save_total_limit 1 \
-#     --learning_rate 2e-5 \
+#     --learning_rate 1e-3 \
 #     --weight_decay 0. \
 #     --warmup_ratio 0.03 \
 #     --lr_scheduler_type "cosine" \

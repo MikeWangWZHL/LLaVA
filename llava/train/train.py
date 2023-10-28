@@ -58,6 +58,11 @@ class ModelArguments:
     mm_use_im_start_end: bool = field(default=False)
     mm_use_im_patch_token: bool = field(default=True)
     mm_vision_select_feature: Optional[str] = field(default="patch")
+    # added for llava_geo
+    model_type: Optional[str] = field(default="llava") # llava_geo
+    llava_geo_config_path: Optional[str] = field(default=None)
+    tune_mae_decoder: bool = field(default=False)
+
 
 
 @dataclass
@@ -180,7 +185,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                                    output_dir: str):
     """Collects the state dict and dump to disk."""
 
-    if getattr(trainer.args, "tune_mm_mlp_adapter", False):
+    if getattr(trainer.args, "tune_mm_mlp_adapter", False) is True and getattr(trainer.args, "tune_mae_decoder", False) is False:
         # Only save Adapter
         keys_to_match = ['mm_projector']
         if getattr(trainer.args, "use_im_start_end", False):
@@ -200,6 +205,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                 torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
         return
 
+    ## always save the entire model
     if trainer.deepspeed:
         torch.cuda.synchronize()
         trainer.save_model(output_dir)
@@ -779,7 +785,7 @@ def train():
                 bnb_4bit_quant_type=training_args.quant_type # {'fp4', 'nf4'}
             )
         ))
-
+    
     if model_args.vision_tower is not None:
         if 'mpt' in model_args.model_name_or_path:
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
@@ -787,6 +793,15 @@ def train():
             model = LlavaMPTForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
                 config=config,
+                cache_dir=training_args.cache_dir,
+                **bnb_model_from_pretrained_args
+            )
+        elif 'llava_geo' in model_args.model_type:
+            assert model_args.llava_geo_config_path is not None
+            mae_config = json.load(open(model_args.llava_geo_config_path, 'r'))
+            bnb_model_from_pretrained_args.update(mae_config)
+            model = LlavaGeoLlamaForCausalLM.from_pretrained(
+                model_args.model_name_or_path,
                 cache_dir=training_args.cache_dir,
                 **bnb_model_from_pretrained_args
             )
@@ -802,6 +817,7 @@ def train():
             cache_dir=training_args.cache_dir,
             **bnb_model_from_pretrained_args
         )
+    
     model.config.use_cache = False
 
     if model_args.freeze_backbone:
@@ -891,6 +907,11 @@ def train():
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
 
+        model.config.tune_mae_decoder = training_args.tune_mae_decoder = model_args.tune_mae_decoder
+        if model.config.tune_mae_decoder:
+            for p in model.mae_decoder.parameters():
+                p.requires_grad = True
+
         model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
         if training_args.freeze_mm_mlp_adapter:
             for p in model.get_model().mm_projector.parameters():
@@ -919,6 +940,13 @@ def train():
 
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
+    print("Train dataset size:", len(data_module['train_dataset']))
+    # print trainable params
+    print("Trainable params:")
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(name)
+
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,

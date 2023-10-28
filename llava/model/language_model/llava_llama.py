@@ -162,10 +162,19 @@ class LlavaGeoConfig(LlamaConfig):
         "norm_pix_loss": True,
         "decoder_num_hidden_layers": 4
     }
+    losses = ["lm", "mae"]
+    loss_weights = {
+        "lm": 1.0,
+        "mae": 1.0
+    }
     def __repr__(self):
         parent_repr = super().__repr__()  # Gets the representation from the parent class
+        # all attribute values
         return (f"{parent_repr}, "  
-                f"\"mae_decoder_config\": {self.mae_decoder_config}")
+                f"\"mae_decoder_config\": {self.mae_decoder_config}, "
+                f"\"losses\": {self.losses}, "
+                f"\"loss_weights\": {self.loss_weights}"
+        )
 
 class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
     config_class = LlavaGeoConfig
@@ -176,7 +185,10 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        self._build_mae_decoder()
+        if getattr(self.config, "mae_decoder_config", None):
+            self._build_mae_decoder()
+        else:
+            self.mae_decoder_config = None
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -314,22 +326,6 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
 
         input_ids, attention_mask, past_key_values, inputs_embeds, labels, image_features_with_cls \
             = self.prepare_inputs_labels_for_multimodal(input_ids, attention_mask, past_key_values, labels, images)
-        
-        # print("input_ids.shape", input_ids.shape)
-        print("inputs_embeds shape", inputs_embeds.shape)
-        print("image_features_with_cls shape", image_features_with_cls.shape)
-
-        # compute MAE decoder loss
-        sequence_unmasked, mask, ids_restore = self.random_masking(image_features_with_cls[:, 1:, :])
-        print("sequence_unmasked shape", sequence_unmasked.shape)
-        print("mask shape", mask.shape)
-        print("ids_restore shape", ids_restore.shape)
-        sequence_unmasked_with_cls = torch.cat((image_features_with_cls[:, :1, :], sequence_unmasked), dim=1)
-        mae_decoder_outputs = self.mae_decoder(sequence_unmasked_with_cls, ids_restore)
-        reconstruction_logits = mae_decoder_outputs.logits
-        print("reconstruction_logits shape", reconstruction_logits.shape)
-        reconstruction_loss = self.mae_loss(images, reconstruction_logits, mask)
-        print("reconstruction_loss", reconstruction_loss)
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
@@ -358,12 +354,25 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
             # Enable model/pipeline parallelism
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
+            print("lm loss:", loss)
+            
+            if self.mae_decoder_config is not None and "mae" in self.config.losses and image_features_with_cls is not None:
+                # compute MAE decoder loss
+                sequence_unmasked, mask, ids_restore = self.random_masking(image_features_with_cls[:, 1:, :])
+                # print("sequence_unmasked shape", sequence_unmasked.shape)
+                # print("mask shape", mask.shape)
+                # print("ids_restore shape", ids_restore.shape)
+                sequence_unmasked_with_cls = torch.cat((image_features_with_cls[:, :1, :], sequence_unmasked), dim=1)
+                mae_decoder_outputs = self.mae_decoder(sequence_unmasked_with_cls, ids_restore)
+                reconstruction_logits = mae_decoder_outputs.logits
+                # print("reconstruction_logits shape", reconstruction_logits.shape)
+                reconstruction_loss = self.mae_loss(images, reconstruction_logits, mask)
+                print("reconstruction_loss", reconstruction_loss)
 
-        semantic_loss_weight = getattr(self.config, "semantic_loss_weight", 0.5)
-        reconstruction_loss_weight = getattr(self.config, "reconstruction_loss_weight", 0.5)
-        print("semantic loss:", loss)
-        loss = 2 * (loss * semantic_loss_weight + reconstruction_loss * reconstruction_loss_weight)
-        print("total loss:", loss)
+                loss = loss * self.config.loss_weights['lm'] + reconstruction_loss * self.config.loss_weights['mae']
+            else:
+                loss = loss * self.config.loss_weights['lm']
+            # import pdb; pdb.set_trace()
 
         if not return_dict:
             output = (logits,) + outputs[1:]

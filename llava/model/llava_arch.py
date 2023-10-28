@@ -267,9 +267,7 @@ class LlavaGeoMetaForCausalLM(ABC):
         return self.get_model().get_vision_tower()
 
     def encode_images(self, images):
-        print("images.shape:", images.shape)
         image_features = self.get_model().get_vision_tower()(images)
-        print("image_features.shape:", image_features.shape)
         image_features = self.get_model().mm_projector(image_features)
         return image_features
 
@@ -280,15 +278,13 @@ class LlavaGeoMetaForCausalLM(ABC):
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
             if past_key_values is not None and vision_tower is not None and images is not None and input_ids.shape[1] == 1:
                 attention_mask = torch.ones((attention_mask.shape[0], past_key_values[-1][-1].shape[-2] + 1), dtype=attention_mask.dtype, device=attention_mask.device)
-            return input_ids, attention_mask, past_key_values, None, labels
+            return input_ids, attention_mask, past_key_values, None, labels, None
 
 
         # set the select_feature to cls_patch
         _select_feature_arg = self.get_model().config.mm_vision_select_feature
         self.get_model().get_vision_tower().select_feature = "cls_patch"
-        print("select feature:", self.get_model().get_vision_tower().select_feature)
         
-
         if type(images) is list or images.ndim == 5:
             concat_images = torch.cat([image for image in images], dim=0)
             image_features_with_cls = self.encode_images(concat_images)
@@ -302,7 +298,6 @@ class LlavaGeoMetaForCausalLM(ABC):
 
         # set the select_feature back to the original value
         self.get_model().get_vision_tower().select_feature = _select_feature_arg
-        print("select feature:", self.get_model().get_vision_tower().select_feature)
 
         new_input_embeds = []
         new_labels = [] if labels is not None else None
