@@ -1,7 +1,7 @@
 #!/bin/bash
 LLAVA_FINETUNE_DATA_DIR="/data/wangz3/projects/llava_data/LLaVA-Pretrain"
 
-SAVE_PER_STEPS=9000 # 24000
+SAVE_PER_STEPS=8000 # 24000
 LR=1e-4 # 1e-3
 
 # deepspeed --include localhost:1,2 llava/train/train_mem.py \

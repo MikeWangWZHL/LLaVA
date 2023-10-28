@@ -248,6 +248,42 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
         )
         return patchified_pixel_values
 
+
+    def unpatchify(self, patchified_pixel_values):
+        """
+        Args:
+            patchified_pixel_values (`torch.FloatTensor` of shape `(batch_size, num_patches, patch_size**2 * num_channels)`:
+                Patchified pixel values.
+
+        Returns:
+            `torch.FloatTensor` of shape `(batch_size, num_channels, height, width)`:
+                Pixel values.
+        """
+        patch_size, num_channels = self.mae_decoder_config.patch_size, self.mae_decoder_config.num_channels
+        num_patches_one_direction = int(patchified_pixel_values.shape[1] ** 0.5)
+        # sanity check
+        if num_patches_one_direction**2 != patchified_pixel_values.shape[1]:
+            raise ValueError("Make sure that the number of patches can be squared")
+
+        # unpatchify
+        batch_size = patchified_pixel_values.shape[0]
+        patchified_pixel_values = patchified_pixel_values.reshape(
+            batch_size,
+            num_patches_one_direction,
+            num_patches_one_direction,
+            patch_size,
+            patch_size,
+            num_channels,
+        )
+        patchified_pixel_values = torch.einsum("nhwpqc->nchpwq", patchified_pixel_values)
+        pixel_values = patchified_pixel_values.reshape(
+            batch_size,
+            num_channels,
+            num_patches_one_direction * patch_size,
+            num_patches_one_direction * patch_size,
+        )
+        return pixel_values
+
     def random_masking(self, sequence, noise=None):
         """
         Perform per-sample random masking by per-sample shuffling. Per-sample shuffling is done by argsort random
@@ -354,7 +390,7 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
             # Enable model/pipeline parallelism
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
-            print("lm loss:", loss)
+            # print("lm loss:", loss)
             
             if self.mae_decoder_config is not None and "mae" in self.config.losses and image_features_with_cls is not None:
                 # compute MAE decoder loss

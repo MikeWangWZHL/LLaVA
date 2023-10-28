@@ -36,7 +36,6 @@ from llava.mm_utils import tokenizer_image_token
 
 from PIL import Image
 
-
 local_rank = None
 
 
@@ -629,6 +628,9 @@ def preprocess(
     return dict(input_ids=input_ids, labels=targets)
 
 
+import random
+random.seed(0)
+
 class LazySupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
@@ -672,7 +674,16 @@ class LazySupervisedDataset(Dataset):
             image_file = self.list_data_dict[i]['image']
             image_folder = self.data_args.image_folder
             processor = self.data_args.image_processor
-            image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+            
+            # handle image not downloaded
+            image_path = os.path.join(image_folder, image_file)
+            if not os.path.exists(image_path):
+                # get another random instance
+                idx = random.randint(0, len(self.list_data_dict)-1)
+                logging.warning(f"Image {image_path} does not exist, get another random instance {idx}")
+                return self.__getitem__(idx)
+
+            image = Image.open(image_path).convert('RGB')
             if self.data_args.image_aspect_ratio == 'pad':
                 def expand2square(pil_img, background_color):
                     width, height = pil_img.size
@@ -974,7 +985,6 @@ def train():
     else:
         safe_save_model_for_hf_trainer(trainer=trainer,
                                        output_dir=training_args.output_dir)
-
 
 if __name__ == "__main__":
     train()
