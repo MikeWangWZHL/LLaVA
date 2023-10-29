@@ -675,15 +675,21 @@ class LazySupervisedDataset(Dataset):
             image_folder = self.data_args.image_folder
             processor = self.data_args.image_processor
             
-            # handle image not downloaded
+            # handle image not exist
             image_path = os.path.join(image_folder, image_file)
             if not os.path.exists(image_path):
                 # get another random instance
                 idx = random.randint(0, len(self.list_data_dict)-1)
                 logging.warning(f"Image {image_path} does not exist, get another random instance {idx}")
                 return self.__getitem__(idx)
+            # handle image not loaded
+            try:
+                image = Image.open(image_path).convert('RGB')
+            except Exception as e:
+                idx = random.randint(0, len(self.list_data_dict)-1)
+                logging.warning(f"Image {image_path} cannot be opened, get another random instance {idx}")
+                return self.__getitem__(idx)
 
-            image = Image.open(image_path).convert('RGB')
             if self.data_args.image_aspect_ratio == 'pad':
                 def expand2square(pil_img, background_color):
                     width, height = pil_img.size
