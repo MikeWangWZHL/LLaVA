@@ -2,12 +2,11 @@
     "mae_decoder_config":{
         "base_config": "facebook/vit-mae-base",
         "norm_pix_loss": true,
-        "decoder_num_hidden_layers": 2
+        "decoder_num_hidden_layers": 8
     },
-    "losses": ["lm", "mae"],
+    "losses": ["mae"],
     "loss_weights": {
-        "lm": 1.0,
         "mae": 1.0
     },
-    "do_reconstruction_only": false
+    "do_reconstruction_only": true
 }

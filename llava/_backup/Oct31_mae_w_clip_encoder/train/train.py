@@ -36,8 +36,6 @@ from llava.mm_utils import tokenizer_image_token
 
 from PIL import Image
 
-from transformers import AutoImageProcessor, ViTMAEForPreTraining
-
 local_rank = None
 
 
@@ -62,7 +60,7 @@ class ModelArguments:
     # added for llava_geo
     model_type: Optional[str] = field(default="llava") # llava_geo
     llava_geo_config_path: Optional[str] = field(default=None)
-    tune_mae_adapter: bool = field(default=False)
+    tune_mae_decoder: bool = field(default=False)
     tune_vision_tower: bool = field(default=False)
 
 
@@ -111,7 +109,6 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_weight_path: str = ""
     lora_bias: str = "none"
     group_by_modality_length: bool = field(default=False)
-    mae_image_processor: Optional[AutoImageProcessor] = field(default=None) 
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -188,25 +185,25 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                                    output_dir: str):
     """Collects the state dict and dump to disk."""
 
-    # if getattr(trainer.args, "tune_mm_mlp_adapter", False) is True:
-    #     # Only save Adapter
-    #     keys_to_match = ['mm_projector']
-    #     if getattr(trainer.args, "use_im_start_end", False):
-    #         keys_to_match.extend(['embed_tokens', 'embed_in'])
+    if getattr(trainer.args, "tune_mm_mlp_adapter", False) is True and getattr(trainer.args, "tune_mae_decoder", False) is False:
+        # Only save Adapter
+        keys_to_match = ['mm_projector']
+        if getattr(trainer.args, "use_im_start_end", False):
+            keys_to_match.extend(['embed_tokens', 'embed_in'])
 
-    #     weight_to_save = get_mm_adapter_state_maybe_zero_3(trainer.model.named_parameters(), keys_to_match)
-    #     trainer.model.config.save_pretrained(output_dir)
+        weight_to_save = get_mm_adapter_state_maybe_zero_3(trainer.model.named_parameters(), keys_to_match)
+        trainer.model.config.save_pretrained(output_dir)
 
-    #     current_folder = output_dir.split('/')[-1]
-    #     parent_folder = os.path.dirname(output_dir)
-    #     if trainer.args.local_rank == 0 or trainer.args.local_rank == -1:
-    #         if current_folder.startswith('checkpoint-'):
-    #             mm_projector_folder = os.path.join(parent_folder, "mm_projector")
-    #             os.makedirs(mm_projector_folder, exist_ok=True)
-    #             torch.save(weight_to_save, os.path.join(mm_projector_folder, f'{current_folder}.bin'))
-    #         else:
-    #             torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
-    #     return
+        current_folder = output_dir.split('/')[-1]
+        parent_folder = os.path.dirname(output_dir)
+        if trainer.args.local_rank == 0 or trainer.args.local_rank == -1:
+            if current_folder.startswith('checkpoint-'):
+                mm_projector_folder = os.path.join(parent_folder, "mm_projector")
+                os.makedirs(mm_projector_folder, exist_ok=True)
+                torch.save(weight_to_save, os.path.join(mm_projector_folder, f'{current_folder}.bin'))
+            else:
+                torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
+        return
 
     ## always save the entire model
     if trainer.deepspeed:
@@ -678,8 +675,7 @@ class LazySupervisedDataset(Dataset):
             image_file = self.list_data_dict[i]['image']
             image_folder = self.data_args.image_folder
             processor = self.data_args.image_processor
-            mae_processor = self.data_args.mae_image_processor
-
+            
             # handle image not exist
             image_path = os.path.join(image_folder, image_file)
             if not os.path.exists(image_path):
@@ -695,8 +691,6 @@ class LazySupervisedDataset(Dataset):
                 logging.warning(f"Image {image_path} cannot be opened, get another random instance {idx}")
                 return self.__getitem__(idx)
 
-
-            mae_image = None
             if self.data_args.image_aspect_ratio == 'pad':
                 def expand2square(pil_img, background_color):
                     width, height = pil_img.size
@@ -712,13 +706,8 @@ class LazySupervisedDataset(Dataset):
                         return result
                 image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-                if mae_processor is not None:
-                    mae_image = mae_processor(images=image, return_tensors="pt")['pixel_values'][0]
             else:
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-                if mae_processor is not None:
-                    mae_image = mae_processor(images=image, return_tensors="pt")['pixel_values'][0]
-
             sources = preprocess_multimodal(
                 copy.deepcopy([e["conversations"] for e in sources]),
                 self.data_args)
@@ -735,13 +724,10 @@ class LazySupervisedDataset(Dataset):
         # image exist in the data
         if 'image' in self.list_data_dict[i]:
             data_dict['image'] = image
-            if mae_image:
-                data_dict['mae_image'] = mae_image
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
             data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
-            data_dict['mae_image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
         return data_dict
 
 
@@ -775,13 +761,6 @@ class DataCollatorForSupervisedDataset(object):
                 batch['images'] = torch.stack(images)
             else:
                 batch['images'] = images
-            
-        if 'mae_image' in instances[0]:
-            mae_images = [instance['mae_image'] for instance in instances]
-            if all(x is not None and x.shape == mae_images[0].shape for x in mae_images):
-                batch['images_for_mae'] = torch.stack(mae_images)
-            else:
-                batch['images_for_mae'] = mae_images
 
         return batch
 
@@ -961,30 +940,20 @@ def train():
         vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
 
         data_args.image_processor = vision_tower.image_processor
-        if 'llava_geo' in model_args.model_type:
-            data_args.mae_image_processor = model.mae_image_processor
-
         data_args.is_multimodal = True
 
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
         model.config.image_grid_pinpoints = data_args.image_grid_pinpoints
 
-
-        # first freeze all
-        model.requires_grad_(False)
-
-        # unfreeze projection layer
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
         if model_args.tune_mm_mlp_adapter:
+            model.requires_grad_(False)
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
 
-        # unfreeze mae to projection connection layers
-        model.config.tune_mae_adapter = training_args.tune_mae_adapter = model_args.tune_mae_adapter
-        if model.config.tune_mae_adapter:
-            for p in model.mae_enc_to_projection.parameters():
-                p.requires_grad = True
-            for p in model.projection_to_mae_dec.parameters():
+        model.config.tune_mae_decoder = training_args.tune_mae_decoder = model_args.tune_mae_decoder
+        if model.config.tune_mae_decoder:
+            for p in model.mae_decoder.parameters():
                 p.requires_grad = True
 
         model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter

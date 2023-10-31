@@ -30,11 +30,13 @@ from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM, LlavaGeoMetaForCa
 class LlavaConfig(LlamaConfig):
     model_type = "llava"
 
+
 class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
     config_class = LlavaConfig
 
     def __init__(self, config: LlamaConfig):
         super(LlavaLlamaModel, self).__init__(config)
+
 
 class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
     config_class = LlavaConfig
@@ -169,9 +171,10 @@ class LlavaGeoOutput(CausalLMOutputWithPast):
 
 class LlavaGeoConfig(LlavaConfig):
     model_type = "llava_geo"
-    mae_config = {
+    mae_decoder_config = {
         "base_config": "facebook/vit-mae-base",
-        "norm_pix_loss": True
+        "norm_pix_loss": True,
+        "decoder_num_hidden_layers": 4
     }
     losses = ["lm", "mae"]
     loss_weights = {
@@ -183,14 +186,12 @@ class LlavaGeoConfig(LlavaConfig):
         parent_repr = super().__repr__()  # Gets the representation from the parent class
         # all attribute values
         return (f"{parent_repr}, "  
-                f"\"mae_config\": {self.mae_config}, "
+                f"\"mae_decoder_config\": {self.mae_decoder_config}, "
                 f"\"losses\": {self.losses}, "
                 f"\"loss_weights\": {self.loss_weights}, "
                 f"\"do_reconstruction_only\": {self.do_reconstruction_only}"
         )
 
-
-from transformers import AutoImageProcessor, ViTMAEForPreTraining
 class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
     config_class = LlavaGeoConfig
 
@@ -200,84 +201,160 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        if getattr(self.config, "mae_config", None):
-            self._build_mae_encoder_decoder()
+        if getattr(self.config, "mae_decoder_config", None):
+            self._build_mae_decoder()
         else:
-            self.mae_config = None
+            self.mae_decoder_config = None
 
         # Initialize weights and apply final processing
         self.post_init()
 
-    def _build_mae_encoder_decoder(self):
-        mae_args = self.config.mae_config
-
-        self.mae_image_processor = AutoImageProcessor.from_pretrained(mae_args['base_config'])
-        self.mae_model = ViTMAEForPreTraining.from_pretrained(mae_args['base_config'])
-        
-        self.mae_config = self.mae_model.config
-
-        # mae encoder - projection layer adaptor
-        self.mae_enc_to_projection = nn.Linear(self.mae_config.hidden_size, self.config.mm_hidden_size)
-        self.projection_to_mae_dec = nn.Linear(self.config.hidden_size, self.mae_config.hidden_size)
-
+    def _build_mae_decoder(self):
+        mae_args = self.config.mae_decoder_config
+        mae_decoder_config = ViTMAEConfig.from_pretrained(mae_args['base_config'])
+        vision_tower_config = self.model.get_vision_tower().config
         # specify image size and patch size
+        mae_decoder_config.image_size = vision_tower_config.image_size
+        mae_decoder_config.patch_size = vision_tower_config.patch_size
+        mae_decoder_config.num_channels = vision_tower_config.num_channels
         for key in mae_args:
             if key not in ['base_config']:
-                setattr(self.mae_config, key, mae_args[key])
+                setattr(mae_decoder_config, key, mae_args[key])
+        # fit hidden dimension
+        mae_decoder_config.hidden_size = self.config.hidden_size
+        mae_decoder_config.intermediate_size = self.config.intermediate_size
+        mae_decoder_config.torch_dtype = self.config.torch_dtype
+
+        self.mae_decoder_config = mae_decoder_config
+
+        num_patches = (mae_decoder_config.image_size // mae_decoder_config.patch_size) ** 2
+        self.mae_decoder = ViTMAEDecoder(mae_decoder_config, num_patches)
 
     def get_model(self):
         return self.model
 
-    def mae_forward(self, 
-                    pixel_values: Optional[torch.FloatTensor] = None,
-                    noise: Optional[torch.FloatTensor] = None,
-                    head_mask: Optional[torch.FloatTensor] = None,
-                    output_attentions: Optional[bool] = None,
-                    output_hidden_states: Optional[bool] = None,
-                    return_dict: Optional[bool] = None,
-    ):
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    def patchify(self, pixel_values):
+        """
+        Args:
+            pixel_values (`torch.FloatTensor` of shape `(batch_size, num_channels, height, width)`):
+                Pixel values.
 
-        outputs = self.mae_model.vit(
-            pixel_values,
-            noise=noise,
-            head_mask=head_mask,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+        Returns:
+            `torch.FloatTensor` of shape `(batch_size, num_patches, patch_size**2 * num_channels)`:
+                Patchified pixel values.
+        """
+        patch_size, num_channels = self.mae_decoder_config.patch_size, self.mae_decoder_config.num_channels
+        # sanity checks
+        if (pixel_values.shape[2] != pixel_values.shape[3]) or (pixel_values.shape[2] % patch_size != 0):
+            raise ValueError("Make sure the pixel values have a squared size that is divisible by the patch size")
+        if pixel_values.shape[1] != num_channels:
+            raise ValueError(
+                "Make sure the number of channels of the pixel values is equal to the one set in the configuration"
+            )
+
+        # patchify
+        batch_size = pixel_values.shape[0]
+        num_patches_one_direction = pixel_values.shape[2] // patch_size
+        patchified_pixel_values = pixel_values.reshape(
+            batch_size, num_channels, num_patches_one_direction, patch_size, num_patches_one_direction, patch_size
         )
-
-        latent = outputs.last_hidden_state
-        ids_restore = outputs.ids_restore
-        mask = outputs.mask
-
-        # mae enc to projection layers
-        latent = self.mae_enc_to_projection(latent)
-        print("latent from mae enc", latent.shape)
-        # go through projection layers
-        latent = self.get_model().mm_projector(latent)
-        print("latent projection", latent.shape)
-        # projection layers to mae dec
-        latent = self.projection_to_mae_dec(latent)
-        print("latent to mae dec", latent.shape)
-
-        decoder_outputs = self.mae_model.decoder(latent, ids_restore)
-        logits = decoder_outputs.logits  # shape (batch_size, num_patches, patch_size*patch_size*num_channels)
-
-        loss = self.mae_model.forward_loss(pixel_values, logits, mask)
-
-        if not return_dict:
-            output = (logits, mask, ids_restore) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
-
-        return ViTMAEForPreTrainingOutput(
-            loss=loss,
-            logits=logits,
-            mask=mask,
-            ids_restore=ids_restore,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
+        patchified_pixel_values = torch.einsum("nchpwq->nhwpqc", patchified_pixel_values)
+        patchified_pixel_values = patchified_pixel_values.reshape(
+            batch_size, num_patches_one_direction * num_patches_one_direction, patch_size**2 * num_channels
         )
+        return patchified_pixel_values
+
+    def unpatchify(self, patchified_pixel_values):
+        """
+        Args:
+            patchified_pixel_values (`torch.FloatTensor` of shape `(batch_size, num_patches, patch_size**2 * num_channels)`:
+                Patchified pixel values.
+
+        Returns:
+            `torch.FloatTensor` of shape `(batch_size, num_channels, height, width)`:
+                Pixel values.
+        """
+        patch_size, num_channels = self.mae_decoder_config.patch_size, self.mae_decoder_config.num_channels
+        num_patches_one_direction = int(patchified_pixel_values.shape[1] ** 0.5)
+        # sanity check
+        if num_patches_one_direction**2 != patchified_pixel_values.shape[1]:
+            raise ValueError("Make sure that the number of patches can be squared")
+
+        # unpatchify
+        batch_size = patchified_pixel_values.shape[0]
+        patchified_pixel_values = patchified_pixel_values.reshape(
+            batch_size,
+            num_patches_one_direction,
+            num_patches_one_direction,
+            patch_size,
+            patch_size,
+            num_channels,
+        )
+        patchified_pixel_values = torch.einsum("nhwpqc->nchpwq", patchified_pixel_values)
+        pixel_values = patchified_pixel_values.reshape(
+            batch_size,
+            num_channels,
+            num_patches_one_direction * patch_size,
+            num_patches_one_direction * patch_size,
+        )
+        return pixel_values
+
+    def random_masking(self, sequence, noise=None):
+        """
+        Perform per-sample random masking by per-sample shuffling. Per-sample shuffling is done by argsort random
+        noise.
+
+        Args:
+            sequence (`torch.LongTensor` of shape `(batch_size, sequence_length, dim)`)
+            noise (`torch.FloatTensor` of shape `(batch_size, sequence_length)`, *optional*) which is
+                mainly used for testing purposes to control randomness and maintain the reproducibility
+        """
+        batch_size, seq_length, dim = sequence.shape
+        len_keep = int(seq_length * (1 - self.mae_decoder_config.mask_ratio))
+
+        if noise is None:
+            noise = torch.rand(batch_size, seq_length, device=sequence.device)  # noise in [0, 1]
+
+        # sort noise for each sample
+        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
+        ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+        # keep the first subset
+        ids_keep = ids_shuffle[:, :len_keep]
+        sequence_unmasked = torch.gather(sequence, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, dim))
+
+        # generate the binary mask: 0 is keep, 1 is remove
+        mask = torch.ones([batch_size, seq_length], device=sequence.device)
+        mask[:, :len_keep] = 0
+        # unshuffle to get the binary mask
+        mask = torch.gather(mask, dim=1, index=ids_restore)
+
+        return sequence_unmasked, mask, ids_restore
+
+    def mae_loss(self, pixel_values, pred, mask):
+        """
+        Args:
+            pixel_values (`torch.FloatTensor` of shape `(batch_size, num_channels, height, width)`):
+                Pixel values.
+            pred (`torch.FloatTensor` of shape `(batch_size, num_patches, patch_size**2 * num_channels)`:
+                Predicted pixel values.
+            mask (`torch.FloatTensor` of shape `(batch_size, sequence_length)`):
+                Tensor indicating which patches are masked (1) and which are not (0).
+
+        Returns:
+            `torch.FloatTensor`: Pixel reconstruction loss.
+        """
+        target = self.patchify(pixel_values)
+        if self.mae_decoder_config.norm_pix_loss:
+            mean = target.mean(dim=-1, keepdim=True)
+            var = target.var(dim=-1, keepdim=True)
+            target = (target - mean) / (var + 1.0e-6) ** 0.5
+
+        loss = (pred - target) ** 2
+        loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+
+        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        return loss
 
     def forward(
         self,
@@ -290,7 +367,6 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         images: Optional[torch.FloatTensor] = None, # (batch_size, num_channels, height, width)
-        images_for_mae: Optional[torch.FloatTensor] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -304,10 +380,11 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
         lm_hidden_states = None
         lm_past_key_values = None
         lm_attentions = None
+
+        input_ids, attention_mask, past_key_values, inputs_embeds, labels, image_features_with_cls \
+            = self.prepare_inputs_labels_for_multimodal(input_ids, attention_mask, past_key_values, labels, images)
         
         if not self.config.do_reconstruction_only:
-            input_ids, attention_mask, past_key_values, inputs_embeds, labels, image_features_with_cls \
-                = self.prepare_inputs_labels_for_multimodal(input_ids, attention_mask, past_key_values, labels, images)
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             outputs = self.model(
                 input_ids=input_ids,
@@ -346,11 +423,14 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
                 # print("lm loss:", lm_loss)
                 losses['lm'] = lm_loss
             
-            if self.mae_config is not None and "mae" in self.config.losses and image_features_with_cls is not None:
+            if self.mae_decoder_config is not None and "mae" in self.config.losses and image_features_with_cls is not None:
                 # compute MAE decoder loss
-                mae_outputs = self.mae_forward(images_for_mae)
-                reconstruction_loss = mae_outputs.loss
-                print("mae loss:", reconstruction_loss)
+                sequence_unmasked, mask, ids_restore = self.random_masking(image_features_with_cls[:, 1:, :])
+                sequence_unmasked_with_cls = torch.cat((image_features_with_cls[:, :1, :], sequence_unmasked), dim=1)
+                mae_decoder_outputs = self.mae_decoder(sequence_unmasked_with_cls, ids_restore)
+                reconstruction_logits = mae_decoder_outputs.logits
+                reconstruction_loss = self.mae_loss(images, reconstruction_logits, mask)
+                # print("reconstruction_loss", reconstruction_loss)
                 losses['mae'] = reconstruction_loss
 
             for key in losses:
@@ -374,6 +454,14 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
             attentions=lm_attentions,
         )
 
+        # return CausalLMOutputWithPast(
+        #     loss=loss,
+        #     logits=logits,
+        #     past_key_values=outputs.past_key_values,
+        #     hidden_states=outputs.hidden_states,
+        #     attentions=outputs.attentions,
+        # )
+
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
     ):
@@ -395,29 +483,6 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
             }
         )
         return model_inputs
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
