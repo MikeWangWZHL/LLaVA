@@ -1,12 +1,11 @@
 {
-    "mae_decoder_config":{
+    "mae_config":{
         "base_config": "facebook/vit-mae-base",
         "norm_pix_loss": true
     },
-    "losses": ["lm", "mae"],
+    "losses": ["mae"],
     "loss_weights": {
-        "lm": 1.0,
         "mae": 1.0
     },
-    "do_reconstruction_only": false
+    "do_reconstruction_only": true
 }

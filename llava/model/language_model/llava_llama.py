@@ -189,7 +189,7 @@ class LlavaGeoConfig(LlavaConfig):
                 f"\"do_reconstruction_only\": {self.do_reconstruction_only}"
         )
 
-
+import wandb
 from transformers import AutoImageProcessor, ViTMAEForPreTraining
 class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
     config_class = LlavaGeoConfig
@@ -253,13 +253,10 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
 
         # mae enc to projection layers
         latent = self.mae_enc_to_projection(latent)
-        print("latent from mae enc", latent.shape)
         # go through projection layers
         latent = self.get_model().mm_projector(latent)
-        print("latent projection", latent.shape)
         # projection layers to mae dec
         latent = self.projection_to_mae_dec(latent)
-        print("latent to mae dec", latent.shape)
 
         decoder_outputs = self.mae_model.decoder(latent, ids_restore)
         logits = decoder_outputs.logits  # shape (batch_size, num_patches, patch_size*patch_size*num_channels)
@@ -343,15 +340,25 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
                 # Enable model/pipeline parallelism
                 shift_labels = shift_labels.to(shift_logits.device)
                 lm_loss = loss_fct(shift_logits, shift_labels)
-                # print("lm loss:", lm_loss)
+                print("lm loss:", lm_loss)
+                wandb.log({"lm_loss":lm_loss.item()})
                 losses['lm'] = lm_loss
             
-            if self.mae_config is not None and "mae" in self.config.losses and image_features_with_cls is not None:
-                # compute MAE decoder loss
-                mae_outputs = self.mae_forward(images_for_mae)
-                reconstruction_loss = mae_outputs.loss
-                print("mae loss:", reconstruction_loss)
-                losses['mae'] = reconstruction_loss
+            if "mae" in self.config.losses:
+
+                if type(images_for_mae) is list or images_for_mae.ndim == 5:
+                    images_for_mae = torch.cat([im for im in images_for_mae], dim=0)
+                # check if the input tensor is zero tensor
+                if images_for_mae.sum() != 0:
+                    # compute MAE decoder loss
+                    mae_outputs = self.mae_forward(images_for_mae)
+                    reconstruction_loss = mae_outputs.loss
+
+                    print("mae loss:", reconstruction_loss)
+                    wandb.log({"mae_reconstruction_loss":reconstruction_loss.item()})
+                    losses['mae'] = reconstruction_loss
+                else:
+                    print("ignore dummy image input for MAE loss")
 
             for key in losses:
                 if loss is None:
@@ -458,8 +465,6 @@ class LlavaGeoLlamaForCausalLM_ReconstructOnly_NoProjection(LlamaForCausalLM, Ll
         mae_decoder_config.hidden_size = vision_tower_config.hidden_size
         mae_decoder_config.intermediate_size = vision_tower_config.intermediate_size
         mae_decoder_config.torch_dtype = vision_tower_config.torch_dtype
-        
-        # import pdb; pdb.set_trace()
 
         self.mae_decoder_config = mae_decoder_config
 

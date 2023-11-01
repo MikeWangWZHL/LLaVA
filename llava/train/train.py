@@ -64,7 +64,7 @@ class ModelArguments:
     llava_geo_config_path: Optional[str] = field(default=None)
     tune_mae_adapter: bool = field(default=False)
     tune_vision_tower: bool = field(default=False)
-
+    tune_llm: bool = field(default=False)
 
 
 @dataclass
@@ -695,7 +695,6 @@ class LazySupervisedDataset(Dataset):
                 logging.warning(f"Image {image_path} cannot be opened, get another random instance {idx}")
                 return self.__getitem__(idx)
 
-
             mae_image = None
             if self.data_args.image_aspect_ratio == 'pad':
                 def expand2square(pil_img, background_color):
@@ -710,14 +709,15 @@ class LazySupervisedDataset(Dataset):
                         result = Image.new(pil_img.mode, (height, height), background_color)
                         result.paste(pil_img, ((height - width) // 2, 0))
                         return result
-                image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                image_pil = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
+                image = processor.preprocess(image_pil, return_tensors='pt')['pixel_values'][0]
                 if mae_processor is not None:
-                    mae_image = mae_processor(images=image, return_tensors="pt")['pixel_values'][0]
+                    mae_image_pil = expand2square(image_pil, tuple(int(x*255) for x in mae_processor.image_mean))
+                    mae_image = mae_processor.preprocess(images=mae_image_pil, return_tensors="pt")['pixel_values'][0]
             else:
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
                 if mae_processor is not None:
-                    mae_image = mae_processor(images=image, return_tensors="pt")['pixel_values'][0]
+                    mae_image = mae_processor.preprocess(images=image, return_tensors="pt")['pixel_values'][0]
+                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
 
             sources = preprocess_multimodal(
                 copy.deepcopy([e["conversations"] for e in sources]),
@@ -735,13 +735,14 @@ class LazySupervisedDataset(Dataset):
         # image exist in the data
         if 'image' in self.list_data_dict[i]:
             data_dict['image'] = image
-            if mae_image:
+            if mae_image is not None:
                 data_dict['mae_image'] = mae_image
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
             data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
-            data_dict['mae_image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+            mae_crop_size = self.data_args.mae_image_processor.size
+            data_dict['mae_image'] = torch.zeros(3, mae_crop_size['height'], mae_crop_size['width'])
         return data_dict
 
 
@@ -853,7 +854,7 @@ def train():
                 cache_dir=training_args.cache_dir,
                 **bnb_model_from_pretrained_args
             )
-            # import pdb; pdb.set_trace()
+
         elif 'llava_geo' in model_args.model_type:
             assert model_args.llava_geo_config_path is not None
             if "7b" in model_args.model_name_or_path:
@@ -973,13 +974,29 @@ def train():
         # first freeze all
         model.requires_grad_(False)
 
-        # unfreeze projection layer
+        # if tune llm: unfreeze llm and freeze all others
+        model.config.tune_llm = training_args.tune_llm = model_args.tune_llm
+        if model_args.tune_llm:
+            model.requires_grad_(True)
+            for p in model.get_model().mm_projector.parameters():
+                p.requires_grad = False
+            for p in model.get_model().vision_tower.parameters():
+                p.requires_grad = False
+            if hasattr(model, 'mae_model'):
+                for p in model.mae_model.parameters():
+                    p.requires_grad = False
+                for p in model.mae_enc_to_projection.parameters():
+                    p.requires_grad = False
+                for p in model.projection_to_mae_dec.parameters():
+                    p.requires_grad = False
+
+        # if unfreeze projection layer
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
         if model_args.tune_mm_mlp_adapter:
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
 
-        # unfreeze mae to projection connection layers
+        # if unfreeze mae to projection connection layers
         model.config.tune_mae_adapter = training_args.tune_mae_adapter = model_args.tune_mae_adapter
         if model.config.tune_mae_adapter:
             for p in model.mae_enc_to_projection.parameters():
@@ -987,15 +1004,12 @@ def train():
             for p in model.projection_to_mae_dec.parameters():
                 p.requires_grad = True
 
-        model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
-        if training_args.freeze_mm_mlp_adapter:
-            for p in model.get_model().mm_projector.parameters():
-                p.requires_grad = False
-
+        # if unfreeze vision tower
         model.config.tune_vision_tower = training_args.tune_vision_tower = model_args.tune_vision_tower
         if model_args.tune_vision_tower:
             for p in model.get_model().get_vision_tower().parameters():
                 p.requires_grad = True
+
 
         if training_args.bits in [4, 8]:
             model.get_model().mm_projector.to(dtype=compute_dtype, device=training_args.device)
