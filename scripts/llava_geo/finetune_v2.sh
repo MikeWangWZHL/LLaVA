@@ -3,15 +3,19 @@
 LLAVA_FINETUNE_DATA_DIR="/data/wangz3/projects/llava_data"
 
 # NOTE: in this setting we freeze llm and only finetune the mae decoder and mm projector
-SAVE_PER_STEPS=5000 # 50000
+SAVE_PER_STEPS=2000 # 50000
 TRAIN_BATCH=16 # 16: for 8 gpu
 GRADIENT_ACCUMULATE=2 # 1 for 8 gpu
-LR=2e-5 # 2e-5
+LR=5e-5 # 2e-5
+MODEL_PATH="/data/wangz3/projects/ecole-gvs-method/third_party/LLaVA/checkpoints/llava_geo_7b/using_pretrained_mae/pretrain_mae_adapter" 
+# MODEL_PATH="liuhaotian/llava-v1.5-7b"
+
+
 # llm frozen version
-# deepspeed --include localhost:1,2,3,4 llava/train/train_mem.py \
-deepspeed --include localhost:1 llava/train/train_mem.py \
+# deepspeed --include localhost:1 llava/train/train_mem.py \
+deepspeed --include localhost:1,2,3,4 llava/train/train_mem.py \
     --deepspeed ./scripts/zero2.json \
-    --model_name_or_path liuhaotian/llava-v1.5-7b \
+    --model_name_or_path ${MODEL_PATH} \
     --version v1 \
     --data_path ${LLAVA_FINETUNE_DATA_DIR}/llava_v1_5_mix665k.json \
     --image_folder ${LLAVA_FINETUNE_DATA_DIR} \

@@ -341,7 +341,7 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
                 shift_labels = shift_labels.to(shift_logits.device)
                 lm_loss = loss_fct(shift_logits, shift_labels)
                 print("lm loss:", lm_loss)
-                wandb.log({"lm_loss":lm_loss.item()})
+                # wandb.log({"lm_loss":lm_loss.item()})
                 losses['lm'] = lm_loss
             
             if "mae" in self.config.losses:
@@ -355,7 +355,7 @@ class LlavaGeoLlamaForCausalLM(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
                     reconstruction_loss = mae_outputs.loss
 
                     print("mae loss:", reconstruction_loss)
-                    wandb.log({"mae_reconstruction_loss":reconstruction_loss.item()})
+                    # wandb.log({"mae_reconstruction_loss":reconstruction_loss.item()})
                     losses['mae'] = reconstruction_loss
                 else:
                     print("ignore dummy image input for MAE loss")
