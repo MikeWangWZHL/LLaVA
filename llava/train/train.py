@@ -111,7 +111,7 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_weight_path: str = ""
     lora_bias: str = "none"
     group_by_modality_length: bool = field(default=False)
-    mae_image_processor: Optional[AutoImageProcessor] = field(default=None) 
+    geo_image_processor: Optional[AutoImageProcessor] = field(default=None) 
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -678,7 +678,7 @@ class LazySupervisedDataset(Dataset):
             image_file = self.list_data_dict[i]['image']
             image_folder = self.data_args.image_folder
             processor = self.data_args.image_processor
-            mae_processor = self.data_args.mae_image_processor
+            geo_processor = self.data_args.geo_image_processor
 
             # handle image not exist
             image_path = os.path.join(image_folder, image_file)
@@ -695,7 +695,7 @@ class LazySupervisedDataset(Dataset):
                 logging.warning(f"Image {image_path} cannot be opened, get another random instance {idx}")
                 return self.__getitem__(idx)
 
-            mae_image = None
+            geo_image = None
             if self.data_args.image_aspect_ratio == 'pad':
                 def expand2square(pil_img, background_color):
                     width, height = pil_img.size
@@ -711,12 +711,12 @@ class LazySupervisedDataset(Dataset):
                         return result
                 image_pil = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
                 image = processor.preprocess(image_pil, return_tensors='pt')['pixel_values'][0]
-                if mae_processor is not None:
-                    mae_image_pil = expand2square(image_pil, tuple(int(x*255) for x in mae_processor.image_mean))
-                    mae_image = mae_processor.preprocess(images=mae_image_pil, return_tensors="pt")['pixel_values'][0]
+                if geo_processor is not None:
+                    geo_image_pil = expand2square(image_pil, tuple(int(x*255) for x in geo_processor.image_mean))
+                    geo_image = geo_processor.preprocess(images=geo_image_pil, return_tensors="pt")['pixel_values'][0]
             else:
-                if mae_processor is not None:
-                    mae_image = mae_processor.preprocess(images=image, return_tensors="pt")['pixel_values'][0]
+                if geo_processor is not None:
+                    geo_image = geo_processor.preprocess(images=image, return_tensors="pt")['pixel_values'][0]
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
 
             sources = preprocess_multimodal(
@@ -735,14 +735,14 @@ class LazySupervisedDataset(Dataset):
         # image exist in the data
         if 'image' in self.list_data_dict[i]:
             data_dict['image'] = image
-            if mae_image is not None:
-                data_dict['mae_image'] = mae_image
+            if geo_image is not None:
+                data_dict['geo_image'] = geo_image
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
             data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
-            mae_crop_size = self.data_args.mae_image_processor.size
-            data_dict['mae_image'] = torch.zeros(3, mae_crop_size['height'], mae_crop_size['width'])
+            geo_crop_size = self.data_args.geo_image_processor.size
+            data_dict['geo_image'] = torch.zeros(3, geo_crop_size['height'], geo_crop_size['width'])
         return data_dict
 
 
@@ -777,12 +777,12 @@ class DataCollatorForSupervisedDataset(object):
             else:
                 batch['images'] = images
             
-        if 'mae_image' in instances[0]:
-            mae_images = [instance['mae_image'] for instance in instances]
-            if all(x is not None and x.shape == mae_images[0].shape for x in mae_images):
-                batch['images_for_mae'] = torch.stack(mae_images)
+        if 'geo_image' in instances[0]:
+            geo_images = [instance['geo_image'] for instance in instances]
+            if all(x is not None and x.shape == geo_images[0].shape for x in geo_images):
+                batch['images_for_geo'] = torch.stack(geo_images)
             else:
-                batch['images_for_mae'] = mae_images
+                batch['images_for_geo'] = geo_images
 
         return batch
 
@@ -847,7 +847,6 @@ def train():
             llava_geo_config_dict = json.load(open(model_args.llava_geo_config_path, 'r'))
             config.update(llava_geo_config_dict)
             config._name_or_path = model_args.model_name_or_path
-            # bnb_model_from_pretrained_args.update(mae_config)
             model = LlavaGeoLlamaForCausalLM_ReconstructOnly_NoProjection.from_pretrained(
                 model_args.model_name_or_path,
                 config=config,
@@ -864,7 +863,6 @@ def train():
             llava_geo_config_dict = json.load(open(model_args.llava_geo_config_path, 'r'))
             config.update(llava_geo_config_dict)
             config._name_or_path = model_args.model_name_or_path
-            # bnb_model_from_pretrained_args.update(mae_config)
             model = LlavaGeoLlamaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
                 config=config,
@@ -963,7 +961,7 @@ def train():
 
         data_args.image_processor = vision_tower.image_processor
         if 'llava_geo' in model_args.model_type:
-            data_args.mae_image_processor = model.mae_image_processor
+            data_args.geo_image_processor = model.geo_image_processor
 
         data_args.is_multimodal = True
 
