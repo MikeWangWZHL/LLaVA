@@ -453,7 +453,7 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
 
         self.geo_image_processor = SamProcessor.from_pretrained(sam_args['base_config'])
         self.geo_encoder = SamModel.from_pretrained(sam_args['base_config'])
-        self.geo_config = self.geo_encoder.config
+        self.geo_config = self.geo_encoder.config.vision_config
         
         # projection layer
         self.geo_to_llm_projector = nn.Linear(
@@ -630,13 +630,11 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        if images is not None and images_for_geo is not None:
-            all_images = [images, images_for_geo]
-
         input_ids, attention_mask, past_key_values, inputs_embeds, labels, image_features \
-            = self.prepare_inputs_labels_for_multimodal(input_ids, attention_mask, past_key_values, labels, all_images)
+            = self.prepare_inputs_labels_for_multimodal(input_ids, attention_mask, past_key_values, labels, images, images_for_geo)
 
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
+
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,

@@ -37,7 +37,7 @@ from llava.mm_utils import tokenizer_image_token
 from PIL import Image
 
 from transformers import AutoImageProcessor, ViTMAEForPreTraining
-
+from transformers import SamProcessor, SamModel
 
 MODEL_TYPE_TO_MODEL_CLASS = {
     "llava": LlavaLlamaForCausalLM,
@@ -726,11 +726,15 @@ class LazySupervisedDataset(Dataset):
                 image_pil = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
                 image = processor.preprocess(image_pil, return_tensors='pt')['pixel_values'][0]
                 if geo_processor is not None:
-                    geo_image_pil = expand2square(image_pil, tuple(int(x*255) for x in geo_processor.image_mean))
-                    geo_image = geo_processor.preprocess(images=geo_image_pil, return_tensors="pt")['pixel_values'][0]
+                    if isinstance(geo_processor, SamProcessor):
+                        geo_image_mean = geo_processor.image_processor.image_mean
+                    else:
+                        geo_image_mean = geo_processor.image_mean
+                    geo_image_pil = expand2square(image_pil, tuple(int(x*255) for x in geo_image_mean))
+                    geo_image = geo_processor(images=geo_image_pil, return_tensors="pt")['pixel_values'][0]
             else:
                 if geo_processor is not None:
-                    geo_image = geo_processor.preprocess(images=image, return_tensors="pt")['pixel_values'][0]
+                    geo_image = geo_processor(images=image, return_tensors="pt")['pixel_values'][0]
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
 
             sources = preprocess_multimodal(
@@ -755,7 +759,10 @@ class LazySupervisedDataset(Dataset):
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
             data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
-            geo_crop_size = self.data_args.geo_image_processor.size
+            if isinstance(self.data_args.geo_image_processor, SamProcessor):
+                geo_crop_size = {'height': 1024, 'width': 1024}
+            else:
+                geo_crop_size = self.data_args.geo_image_processor.size
             data_dict['geo_image'] = torch.zeros(3, geo_crop_size['height'], geo_crop_size['width'])
         return data_dict
 
@@ -1045,6 +1052,9 @@ def train():
             rank0_print(name)
     rank0_print("Trainable params size:", sum(param.numel() for param in model.parameters() if param.requires_grad))
 
+    # import pdb; pdb.set_trace()
+    
+    rank0_print("Training arguments:", training_args)
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,
