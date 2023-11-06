@@ -38,8 +38,21 @@ from PIL import Image
 
 from transformers import AutoImageProcessor, ViTMAEForPreTraining
 
-local_rank = None
 
+MODEL_TYPE_TO_MODEL_CLASS = {
+    "llava": LlavaLlamaForCausalLM,
+    "llava_geo_mae": LlavaGeoLlamaForCausalLMMAE,
+    "llava_geo_early_fusion": LlavaGeoLlamaForCausalLMEarlyFusion
+}
+
+MODEL_TYPE_TO_CONFIG_CLASS = {
+    "llava": LlavaConfig,
+    "llava_geo_mae": LlavaGeoConfigMAE,
+    "llava_geo_early_fusion": LlavaGeoConfigEarlyFusion
+}
+
+
+local_rank = None
 
 def rank0_print(*args):
     if local_rank == 0:
@@ -60,9 +73,10 @@ class ModelArguments:
     mm_use_im_patch_token: bool = field(default=True)
     mm_vision_select_feature: Optional[str] = field(default="patch")
     # added for llava_geo
-    model_type: Optional[str] = field(default="llava") # llava_geo
+    model_type: Optional[str] = field(default="llava")
     llava_geo_config_path: Optional[str] = field(default=None)
     tune_mae_adapter: bool = field(default=False)
+    tune_sam_adapter: bool = field(default=False)
     tune_vision_tower: bool = field(default=False)
     tune_llm: bool = field(default=False)
 
@@ -836,34 +850,22 @@ def train():
                 cache_dir=training_args.cache_dir,
                 **bnb_model_from_pretrained_args
             )
-        # FIXME: only for debugging; remove later
-        elif 'debug' in model_args.model_type:
-            from llava.model.language_model.llava_llama import LlavaGeoLlamaForCausalLM_ReconstructOnly_NoProjection
-            assert model_args.llava_geo_config_path is not None
-            if "7b" in model_args.model_name_or_path:
-                config = LlavaConfig.from_pretrained("liuhaotian/llava-v1.5-7b")
-            else:
-                config = LlavaConfig.from_pretrained("liuhaotian/llava-v1.5-13b")
-            llava_geo_config_dict = json.load(open(model_args.llava_geo_config_path, 'r'))
-            config.update(llava_geo_config_dict)
-            config._name_or_path = model_args.model_name_or_path
-            model = LlavaGeoLlamaForCausalLM_ReconstructOnly_NoProjection.from_pretrained(
-                model_args.model_name_or_path,
-                config=config,
-                cache_dir=training_args.cache_dir,
-                **bnb_model_from_pretrained_args
-            )
-
         elif 'llava_geo' in model_args.model_type:
+            model_cls = MODEL_TYPE_TO_MODEL_CLASS[model_args.model_type]
+            model_cfg = MODEL_TYPE_TO_CONFIG_CLASS[model_args.model_type]
+            
             assert model_args.llava_geo_config_path is not None
             if "7b" in model_args.model_name_or_path:
                 config = LlavaConfig.from_pretrained("liuhaotian/llava-v1.5-7b")
             else:
                 config = LlavaConfig.from_pretrained("liuhaotian/llava-v1.5-13b")
             llava_geo_config_dict = json.load(open(model_args.llava_geo_config_path, 'r'))
+
             config.update(llava_geo_config_dict)
             config._name_or_path = model_args.model_name_or_path
-            model = LlavaGeoLlamaForCausalLM.from_pretrained(
+
+            rank0_print("Model class:", model_cls)
+            model = model_cls.from_pretrained(
                 model_args.model_name_or_path,
                 config=config,
                 cache_dir=training_args.cache_dir,
@@ -975,18 +977,14 @@ def train():
         # if tune llm: unfreeze llm and freeze all others
         model.config.tune_llm = training_args.tune_llm = model_args.tune_llm
         if model_args.tune_llm:
-            model.requires_grad_(True)
+            for p in model.get_model().parameters():
+                p.requires_grad = True
+            for p in model.lm_head.parameters():
+                p.requires_grad = True
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = False
             for p in model.get_model().vision_tower.parameters():
                 p.requires_grad = False
-            if hasattr(model, 'mae_model'):
-                for p in model.mae_model.parameters():
-                    p.requires_grad = False
-                for p in model.mae_enc_to_projection.parameters():
-                    p.requires_grad = False
-                for p in model.projection_to_mae_dec.parameters():
-                    p.requires_grad = False
 
         # if unfreeze projection layer
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
@@ -1000,6 +998,12 @@ def train():
             for p in model.mae_enc_to_projection.parameters():
                 p.requires_grad = True
             for p in model.projection_to_mae_dec.parameters():
+                p.requires_grad = True
+
+        # if unfreeze sam projection layer
+        model.config.tune_sam_adapter = training_args.tune_sam_adapter = model_args.tune_sam_adapter
+        if model.config.tune_sam_adapter:
+            for p in model.geo_to_llm_projector.parameters():
                 p.requires_grad = True
 
         # if unfreeze vision tower
