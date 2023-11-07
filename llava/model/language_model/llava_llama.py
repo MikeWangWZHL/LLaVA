@@ -669,7 +669,13 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 # Enable model/pipeline parallelism
                 shift_labels = shift_labels.to(shift_logits.device)
                 lm_loss = loss_fct(shift_logits, shift_labels)
-                print("lm loss:", lm_loss.item())
+                
+                # if loss is nan
+                if torch.isnan(lm_loss):
+                    print("lm loss:", lm_loss.item(), "shift_labels:", shift_labels, "shift_logits:", shift_logits)
+                else:
+                    print("lm loss:", lm_loss.item())
+
                 # import wandb; wandb.log({"lm_loss":lm_loss.item()})
                 losses['lm'] = lm_loss
             
@@ -686,7 +692,7 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
         return LlavaGeoOutput(
             loss=loss,

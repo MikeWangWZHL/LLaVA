@@ -1,8 +1,8 @@
 #!/bin/bash
-LLAVA_FINETUNE_DATA_DIR="/data/wangz3/projects/llava_data/LLaVA-Pretrain"
+DATA_DIR="/data/wangz3/projects/llava_data/LLaVA-Pretrain"
 
-SAVE_PER_STEPS=1 # 24000
-LR=1e-3 # 1e-3
+SAVE_PER_STEPS=1000 # 24000
+LR=5e-4 # 1e-3
 
 # MODEL_PATH="lmsys/vicuna-13b-v1.5"
 # PRETRAINED_PROJECTOR_PATH="./checkpoints/projectors/llava-v1.5-mlp2x-336px-pretrain-vicuna-13b-v1.5/mm_projector.bin"
@@ -13,19 +13,19 @@ PRETRAINED_PROJECTOR_PATH="./checkpoints/projectors/llava-v1.5-mlp2x-336px-pretr
 MODEL_TYPE="llava_geo_early_fusion"
 
 BITS=16 # 16
-BATCH_SIZE=16 # 32
+BATCH_SIZE=32 # 32
 GRAD_ACC_STEP=2 # 1
 
 # NOTE: using fp16 instead of bf16 due to SAM model not implemented for bf16
     # --bf16 True \
 
-# deepspeed --include localhost:1,2,3,4 llava/train/train_mem.py \
-deepspeed --include localhost:2 llava/train/train_mem.py \
+# deepspeed --include localhost:2 llava/train/train_mem.py \
+deepspeed --include localhost:2,3,4,5 llava/train/train_mem.py \
     --deepspeed ./scripts/zero2.json \
     --model_name_or_path ${MODEL_PATH} \
     --version plain \
-    --data_path ${LLAVA_FINETUNE_DATA_DIR}/blip_laion_cc_sbu_558k.json \
-    --image_folder ${LLAVA_FINETUNE_DATA_DIR}/images \
+    --data_path ${DATA_DIR}/blip_laion_cc_sbu_558k.json \
+    --image_folder ${DATA_DIR}/images \
     --vision_tower openai/clip-vit-large-patch14-336 \
     --mm_projector_type mlp2x_gelu \
     --pretrain_mm_mlp_adapter ${PRETRAINED_PROJECTOR_PATH} \
