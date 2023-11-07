@@ -686,7 +686,7 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
         return LlavaGeoOutput(
             loss=loss,

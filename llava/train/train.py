@@ -1054,7 +1054,7 @@ def train():
 
     # import pdb; pdb.set_trace()
     
-    rank0_print("Training arguments:", training_args)
+    rank0_print("\n\nTraining arguments:", training_args)
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,
