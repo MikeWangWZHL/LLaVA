@@ -1047,14 +1047,16 @@ def train():
     # print trainable params
     rank0_print("Train dataset size:", len(data_module['train_dataset']))
     rank0_print("Trainable params:")
+    trainable_param_size = 0
     for name, param in model.named_parameters():
         if param.requires_grad:
             rank0_print(name)
-    rank0_print("Trainable params size:", sum(param.numel() for param in model.parameters() if param.requires_grad))
+            trainable_param_size += param.numel()
+    rank0_print("Trainable params size:", trainable_param_size)
 
-    # import pdb; pdb.set_trace()
+    import pdb; pdb.set_trace()
     
-    rank0_print("Training arguments:", training_args)
+    rank0_print("\n\nTraining arguments:", training_args)
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,
