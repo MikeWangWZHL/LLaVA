@@ -1052,9 +1052,9 @@ def train():
         if param.requires_grad:
             rank0_print(name)
             trainable_param_size += param.numel()
-    rank0_print("Trainable params size:", trainable_param_size)
+    rank0_print("Trainable params size (showing zero if using zero3 deepspeed):", trainable_param_size)
 
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     
     rank0_print("\n\nTraining arguments:", training_args)
     trainer = LLaVATrainer(model=model,
