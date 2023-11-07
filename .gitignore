@@ -26,6 +26,16 @@ checkpoints
 ckpts*
 
 .ipynb_checkpoints
+<<<<<<< HEAD
 # *.ipynb
 
 ncsa_logs/
+=======
+*.ipynb
+
+# DevContainer
+!.devcontainer/*
+
+# Demo
+serve_images/
+>>>>>>> a7f6cce2ff5ae26f08fe399727052764c63be16f

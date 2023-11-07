@@ -89,7 +89,6 @@ class DataArguments:
     is_multimodal: bool = False
     image_folder: Optional[str] = field(default=None)
     image_aspect_ratio: str = 'square'
-    image_grid_pinpoints: Optional[str] = field(default=None)
 
 
 @dataclass
@@ -124,6 +123,7 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_dropout: float = 0.05
     lora_weight_path: str = ""
     lora_bias: str = "none"
+    mm_projector_lr: Optional[float] = None
     group_by_modality_length: bool = field(default=False)
     geo_image_processor: Optional[AutoImageProcessor] = field(default=None) 
 
@@ -679,7 +679,7 @@ class LazySupervisedDataset(Dataset):
         length_list = []
         for sample in self.list_data_dict:
             cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
-            cur_len = cur_len if 'image' in sample else -cur_len
+            cur_len = cur_len if 'images' in sample else -cur_len
             length_list.append(cur_len)
         return length_list
 
@@ -752,18 +752,18 @@ class LazySupervisedDataset(Dataset):
 
         # image exist in the data
         if 'image' in self.list_data_dict[i]:
-            data_dict['image'] = image
+            data_dict['images'] = image
             if geo_image is not None:
-                data_dict['geo_image'] = geo_image
+                data_dict['geo_images'] = geo_image
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
-            data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+            data_dict['images'] = torch.zeros(3, crop_size['height'], crop_size['width'])
             if isinstance(self.data_args.geo_image_processor, SamProcessor):
                 geo_crop_size = {'height': 1024, 'width': 1024}
             else:
                 geo_crop_size = self.data_args.geo_image_processor.size
-            data_dict['geo_image'] = torch.zeros(3, geo_crop_size['height'], geo_crop_size['width'])
+            data_dict['geo_images'] = torch.zeros(3, geo_crop_size['height'], geo_crop_size['width'])
         return data_dict
 
 
@@ -791,15 +791,15 @@ class DataCollatorForSupervisedDataset(object):
             attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
         )
 
-        if 'image' in instances[0]:
-            images = [instance['image'] for instance in instances]
+        if 'images' in instances[0]:
+            images = [instance['images'] for instance in instances]
             if all(x is not None and x.shape == images[0].shape for x in images):
                 batch['images'] = torch.stack(images)
             else:
                 batch['images'] = images
             
-        if 'geo_image' in instances[0]:
-            geo_images = [instance['geo_image'] for instance in instances]
+        if 'geo_images' in instances[0]:
+            geo_images = [instance['geo_images'] for instance in instances]
             if all(x is not None and x.shape == geo_images[0].shape for x in geo_images):
                 batch['images_for_geo'] = torch.stack(geo_images)
             else:
@@ -975,7 +975,8 @@ def train():
         data_args.is_multimodal = True
 
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
-        model.config.image_grid_pinpoints = data_args.image_grid_pinpoints
+        model.config.tokenizer_padding_side = tokenizer.padding_side
+        model.config.tokenizer_model_max_length = tokenizer.model_max_length
 
 
         # first freeze all
@@ -1024,6 +1025,7 @@ def train():
             model.get_model().mm_projector.to(dtype=compute_dtype, device=training_args.device)
 
         model.config.mm_use_im_start_end = data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
+        model.config.mm_projector_lr = training_args.mm_projector_lr
         training_args.use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
