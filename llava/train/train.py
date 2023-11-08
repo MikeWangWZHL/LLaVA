@@ -89,7 +89,6 @@ class DataArguments:
     is_multimodal: bool = False
     image_folder: Optional[str] = field(default=None)
     image_aspect_ratio: str = 'square'
-    image_grid_pinpoints: Optional[str] = field(default=None)
 
 
 @dataclass
@@ -124,6 +123,7 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_dropout: float = 0.05
     lora_weight_path: str = ""
     lora_bias: str = "none"
+    mm_projector_lr: Optional[float] = None
     group_by_modality_length: bool = field(default=False)
     geo_image_processor: Optional[AutoImageProcessor] = field(default=None) 
 
@@ -185,9 +185,15 @@ def get_mm_adapter_state_maybe_zero_3(named_params, keys_to_match):
 def find_all_linear_names(model):
     cls = torch.nn.Linear
     lora_module_names = set()
-    multimodal_keywords = ['mm_projector', 'vision_tower', 'vision_resampler']
+    ignore_keywords = [
+        'mm_projector', 
+        'vision_tower', 
+        'vision_resampler'
+        'mae_',
+        'geo_'
+    ]
     for name, module in model.named_modules():
-        if any(mm_keyword in name for mm_keyword in multimodal_keywords):
+        if any(mm_keyword in name for mm_keyword in ignore_keywords):
             continue
         if isinstance(module, cls):
             names = name.split('.')
@@ -679,7 +685,7 @@ class LazySupervisedDataset(Dataset):
         length_list = []
         for sample in self.list_data_dict:
             cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
-            cur_len = cur_len if 'image' in sample else -cur_len
+            cur_len = cur_len if 'images' in sample else -cur_len
             length_list.append(cur_len)
         return length_list
 
@@ -752,18 +758,18 @@ class LazySupervisedDataset(Dataset):
 
         # image exist in the data
         if 'image' in self.list_data_dict[i]:
-            data_dict['image'] = image
+            data_dict['images'] = image
             if geo_image is not None:
-                data_dict['geo_image'] = geo_image
+                data_dict['geo_images'] = geo_image
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
-            data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+            data_dict['images'] = torch.zeros(3, crop_size['height'], crop_size['width'])
             if isinstance(self.data_args.geo_image_processor, SamProcessor):
                 geo_crop_size = {'height': 1024, 'width': 1024}
             else:
                 geo_crop_size = self.data_args.geo_image_processor.size
-            data_dict['geo_image'] = torch.zeros(3, geo_crop_size['height'], geo_crop_size['width'])
+            data_dict['geo_images'] = torch.zeros(3, geo_crop_size['height'], geo_crop_size['width'])
         return data_dict
 
 
@@ -791,15 +797,15 @@ class DataCollatorForSupervisedDataset(object):
             attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
         )
 
-        if 'image' in instances[0]:
-            images = [instance['image'] for instance in instances]
+        if 'images' in instances[0]:
+            images = [instance['images'] for instance in instances]
             if all(x is not None and x.shape == images[0].shape for x in images):
                 batch['images'] = torch.stack(images)
             else:
                 batch['images'] = images
             
-        if 'geo_image' in instances[0]:
-            geo_images = [instance['geo_image'] for instance in instances]
+        if 'geo_images' in instances[0]:
+            geo_images = [instance['geo_images'] for instance in instances]
             if all(x is not None and x.shape == geo_images[0].shape for x in geo_images):
                 batch['images_for_geo'] = torch.stack(geo_images)
             else:
@@ -878,6 +884,7 @@ def train():
                 cache_dir=training_args.cache_dir,
                 **bnb_model_from_pretrained_args
             )
+            model.load_geo_model_()
         else:
             model = LlavaLlamaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
@@ -910,11 +917,14 @@ def train():
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     if training_args.lora_enable:
+
+        # import pdb; pdb.set_trace()
+
         from peft import LoraConfig, get_peft_model
         lora_config = LoraConfig(
             r=training_args.lora_r,
             lora_alpha=training_args.lora_alpha,
-            target_modules=find_all_linear_names(model),
+            target_modules=find_all_linear_names(model), # lora only on linear layers
             lora_dropout=training_args.lora_dropout,
             bias=training_args.lora_bias,
             task_type="CAUSAL_LM",
@@ -926,6 +936,7 @@ def train():
                 model.to(torch.float16)
         rank0_print("Adding LoRA adapters...")
         model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
 
     if 'mpt' in model_args.model_name_or_path:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -975,23 +986,25 @@ def train():
         data_args.is_multimodal = True
 
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
-        model.config.image_grid_pinpoints = data_args.image_grid_pinpoints
+        model.config.tokenizer_padding_side = tokenizer.padding_side
+        model.config.tokenizer_model_max_length = tokenizer.model_max_length
 
 
-        # first freeze all
-        model.requires_grad_(False)
 
-        # if tune llm: unfreeze llm and freeze all others
-        model.config.tune_llm = training_args.tune_llm = model_args.tune_llm
-        if model_args.tune_llm:
-            for p in model.get_model().parameters():
-                p.requires_grad = True
-            for p in model.lm_head.parameters():
-                p.requires_grad = True
-            for p in model.get_model().mm_projector.parameters():
-                p.requires_grad = False
-            for p in model.get_model().vision_tower.parameters():
-                p.requires_grad = False
+        if not training_args.lora_enable:
+            # first freeze all
+            model.requires_grad_(False)
+            # if tune llm: unfreeze llm and freeze all others
+            model.config.tune_llm = training_args.tune_llm = model_args.tune_llm
+            if model_args.tune_llm:
+                for p in model.get_model().parameters():
+                    p.requires_grad = True
+                for p in model.lm_head.parameters():
+                    p.requires_grad = True
+                for p in model.get_model().mm_projector.parameters():
+                    p.requires_grad = False
+                for p in model.get_model().vision_tower.parameters():
+                    p.requires_grad = False
 
         # if unfreeze projection layer
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
@@ -1024,9 +1037,11 @@ def train():
             model.get_model().mm_projector.to(dtype=compute_dtype, device=training_args.device)
 
         model.config.mm_use_im_start_end = data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
+        model.config.mm_projector_lr = training_args.mm_projector_lr
         training_args.use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
+
 
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer
@@ -1052,9 +1067,12 @@ def train():
         if param.requires_grad:
             rank0_print(name)
             trainable_param_size += param.numel()
-    rank0_print("Trainable params size:", trainable_param_size)
-
-    import pdb; pdb.set_trace()
+    if training_args.lora_enable:
+        model.print_trainable_parameters()
+    else:
+        rank0_print("Trainable params size (showing zero if using zero3 deepspeed):", trainable_param_size)
+    
+    # import pdb; pdb.set_trace()
     
     rank0_print("\n\nTraining arguments:", training_args)
     trainer = LLaVATrainer(model=model,

@@ -21,15 +21,17 @@ MODEL_TYPE="llava_geo_early_fusion"
 # 16 * 4 * 4 = 256
 
 BITS=16 # 16
-BATCH_SIZE=4 # 16
-GRAD_ACC_STEP=8 # 1
+BATCH_SIZE=1 # 16
+GRAD_ACC_STEP=1 # 1
+
+export NCCL_DEBUG=INFO
 
 # NOTE: using fp16 instead of bf16 due to SAM model not implemented for bf16
     # --bf16 True \
 
 # deepspeed --include localhost:1,2,3,4 llava/train/train_mem.py \
-# deepspeed --include localhost:0,1,2,3 llava/train/train_mem.py \
-deepspeed --include localhost:0 llava/train/train_mem.py \
+# deepspeed --include localhost:0 llava/train/train_mem.py \
+deepspeed --include localhost:0,1,2,3 llava/train/train_mem.py \
     --deepspeed ${CODE_DIR}/scripts/zero3.json \
     --model_name_or_path ${MODEL_PATH} \
     --version v1 \
