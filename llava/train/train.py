@@ -185,9 +185,15 @@ def get_mm_adapter_state_maybe_zero_3(named_params, keys_to_match):
 def find_all_linear_names(model):
     cls = torch.nn.Linear
     lora_module_names = set()
-    multimodal_keywords = ['mm_projector', 'vision_tower', 'vision_resampler']
+    ignore_keywords = [
+        'mm_projector', 
+        'vision_tower', 
+        'vision_resampler'
+        'mae_',
+        'geo_'
+    ]
     for name, module in model.named_modules():
-        if any(mm_keyword in name for mm_keyword in multimodal_keywords):
+        if any(mm_keyword in name for mm_keyword in ignore_keywords):
             continue
         if isinstance(module, cls):
             names = name.split('.')
@@ -878,6 +884,7 @@ def train():
                 cache_dir=training_args.cache_dir,
                 **bnb_model_from_pretrained_args
             )
+            model.load_geo_model_()
         else:
             model = LlavaLlamaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
@@ -910,11 +917,14 @@ def train():
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     if training_args.lora_enable:
+
+        # import pdb; pdb.set_trace()
+
         from peft import LoraConfig, get_peft_model
         lora_config = LoraConfig(
             r=training_args.lora_r,
             lora_alpha=training_args.lora_alpha,
-            target_modules=find_all_linear_names(model),
+            target_modules=find_all_linear_names(model), # lora only on linear layers
             lora_dropout=training_args.lora_dropout,
             bias=training_args.lora_bias,
             task_type="CAUSAL_LM",
@@ -926,6 +936,7 @@ def train():
                 model.to(torch.float16)
         rank0_print("Adding LoRA adapters...")
         model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
 
     if 'mpt' in model_args.model_name_or_path:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -979,20 +990,21 @@ def train():
         model.config.tokenizer_model_max_length = tokenizer.model_max_length
 
 
-        # first freeze all
-        model.requires_grad_(False)
 
-        # if tune llm: unfreeze llm and freeze all others
-        model.config.tune_llm = training_args.tune_llm = model_args.tune_llm
-        if model_args.tune_llm:
-            for p in model.get_model().parameters():
-                p.requires_grad = True
-            for p in model.lm_head.parameters():
-                p.requires_grad = True
-            for p in model.get_model().mm_projector.parameters():
-                p.requires_grad = False
-            for p in model.get_model().vision_tower.parameters():
-                p.requires_grad = False
+        if not training_args.lora_enable:
+            # first freeze all
+            model.requires_grad_(False)
+            # if tune llm: unfreeze llm and freeze all others
+            model.config.tune_llm = training_args.tune_llm = model_args.tune_llm
+            if model_args.tune_llm:
+                for p in model.get_model().parameters():
+                    p.requires_grad = True
+                for p in model.lm_head.parameters():
+                    p.requires_grad = True
+                for p in model.get_model().mm_projector.parameters():
+                    p.requires_grad = False
+                for p in model.get_model().vision_tower.parameters():
+                    p.requires_grad = False
 
         # if unfreeze projection layer
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
@@ -1030,6 +1042,7 @@ def train():
         model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
 
+
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer
         for name, module in model.named_modules():
@@ -1054,8 +1067,11 @@ def train():
         if param.requires_grad:
             rank0_print(name)
             trainable_param_size += param.numel()
-    rank0_print("Trainable params size (showing zero if using zero3 deepspeed):", trainable_param_size)
-
+    if training_args.lora_enable:
+        model.print_trainable_parameters()
+    else:
+        rank0_print("Trainable params size (showing zero if using zero3 deepspeed):", trainable_param_size)
+    
     # import pdb; pdb.set_trace()
     
     rank0_print("\n\nTraining arguments:", training_args)

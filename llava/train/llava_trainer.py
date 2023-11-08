@@ -13,7 +13,7 @@ from transformers.trainer import (
     logger,
 )
 from typing import List, Optional
-
+from torch import nn
 
 def maybe_zero_3(param, ignore_status=False, name=None):
     from deepspeed import zero
@@ -165,7 +165,8 @@ class LLaVATrainer(Trainer):
             decay_parameters = get_parameter_names(opt_model, ALL_LAYERNORM_LAYERS)
             decay_parameters = [name for name in decay_parameters if "bias" not in name]
             if self.args.mm_projector_lr is not None:
-                projector_parameters = [name for name, _ in opt_model.named_parameters() if "mm_projector" in name]
+                # projector_parameters = [name for name, _ in opt_model.named_parameters() if "mm_projector" in name]
+                projector_parameters = [name for name, _ in opt_model.named_parameters() if ("mm_projector" in name or "geo_to_llm_projector" in name)]
                 optimizer_grouped_parameters = [
                     {
                         "params": [
@@ -213,6 +214,7 @@ class LLaVATrainer(Trainer):
             optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
 
             if self.sharded_ddp == ShardedDDPOption.SIMPLE:
+                from fairscale.optim import OSS
                 self.optimizer = OSS(
                     params=optimizer_grouped_parameters,
                     optim=optimizer_cls,

@@ -117,6 +117,7 @@ AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)
 from transformers.models.vit_mae.modeling_vit_mae import *
 from transformers.models.vit_mae.configuration_vit_mae import *
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from torch.nn import CrossEntropyLoss
 
 class LlavaGeoOutput(CausalLMOutputWithPast):
     def __init__(self, 
@@ -135,7 +136,6 @@ class LlavaGeoOutput(CausalLMOutputWithPast):
 # 1. take the encoded full sequence of image patch embeddings
 # 2. randomly mask out 75% (pick the 25%) and feed to the decoder: shuffle, then pick the first 25%, log the ids_restore => reference: https://github.com/huggingface/transformers/blob/acc394c4f5e1283c19783581790b3dc3105a3697/src/transformers/models/vit_mae/modeling_vit_mae.py#L232C14-L232C14
 # 3. => decoder: append the mask tokens, then unshuffle; then compute reconstruction loss on the masked patches
-
 
 class LlavaGeoConfigMAE(LlavaConfig):
     model_type = "llava_geo"
@@ -351,27 +351,17 @@ class LlavaGeoLlamaForCausalLMMAE(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
             attentions=lm_attentions,
         )
 
-    def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
-    ):
-        if past_key_values:
-            input_ids = input_ids[:, -1:]
-
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids}
-
-        model_inputs.update(
-            {
-                "past_key_values": past_key_values,
-                "use_cache": kwargs.get("use_cache"),
-                "attention_mask": attention_mask,
-                "images": kwargs.get("images", None),
-            }
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
+        images = kwargs.pop("images", None)
+        images_for_geo = kwargs.pop("images_for_geo", None)
+        _inputs = super().prepare_inputs_for_generation(
+            input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
         )
-        return model_inputs
+        if images is not None:
+            _inputs['images'] = images
+        if images_for_geo is not None:
+            _inputs['images_for_geo'] = images_for_geo
+        return _inputs
 
 ### Early Fusion ###
 
@@ -411,20 +401,24 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
+        self.load_geo_model_()
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def load_geo_model_(self):
         if getattr(self.config, "sam_config", None):
             self._build_sam_model()
         else:
             self.geo_config = None
 
-        # Initialize weights and apply final processing
-        self.post_init()
-
     def _build_sam_model(self):
         sam_args = self.config.sam_config
 
+        print("Loading SAM encoder from:", sam_args['base_config'])
         self.geo_image_processor = SamProcessor.from_pretrained(sam_args['base_config'])
-        self.geo_encoder = SamModel.from_pretrained(sam_args['base_config'])
-        self.geo_config = self.geo_encoder.config.vision_config
+        self.geo_encoder = SamModel.from_pretrained(sam_args['base_config']).vision_encoder
+        self.geo_config = self.geo_encoder.config
         
         # projection layer
         self.geo_to_llm_projector = nn.Linear(
@@ -437,12 +431,12 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 setattr(self.geo_config, key, sam_args[key])
 
     def encode_images_geo(self, pixel_values):
-        image_features_geo = self.geo_encoder.get_image_embeddings(pixel_values) # (batch_size, chanel_size, width, height)
+        vision_output = self.geo_encoder(pixel_values) # (batch_size, chanel_size, width, height)
+        image_features_geo = vision_output[0]     
         batch_size, num_channels, num_patch_width, num_patch_height = image_features_geo.shape # width = height = image_size // patch_size = 64 
         image_features_geo = image_features_geo.reshape(batch_size, num_channels, num_patch_width * num_patch_height)
         image_features_geo = self.geo_to_llm_projector(image_features_geo)
         return image_features_geo
-
 
     def get_model(self):
         return self.model
@@ -580,7 +574,6 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
 
         return None, attention_mask, past_key_values, new_input_embeds, new_labels, image_features
 
-
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -676,24 +669,14 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
             attentions=lm_attentions,
         )
 
-    def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
-    ):
-        if past_key_values:
-            input_ids = input_ids[:, -1:]
-
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids}
-
-        model_inputs.update(
-            {
-                "past_key_values": past_key_values,
-                "use_cache": kwargs.get("use_cache"),
-                "attention_mask": attention_mask,
-                "images": kwargs.get("images", None),
-            }
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
+        images = kwargs.pop("images", None)
+        images_for_geo = kwargs.pop("images_for_geo", None)
+        _inputs = super().prepare_inputs_for_generation(
+            input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
         )
-        return model_inputs
+        if images is not None:
+            _inputs['images'] = images
+        if images_for_geo is not None:
+            _inputs['images_for_geo'] = images_for_geo
+        return _inputs
