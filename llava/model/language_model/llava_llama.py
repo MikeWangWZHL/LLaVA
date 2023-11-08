@@ -17,7 +17,6 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from torch.nn import CrossEntropyLoss
 
 from transformers import AutoConfig, AutoModelForCausalLM, \
                          LlamaConfig, LlamaModel, LlamaForCausalLM
@@ -42,7 +41,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
     def __init__(self, config):
         super(LlamaForCausalLM, self).__init__(config)
         self.model = LlavaLlamaModel(config)
-
+        self.pretraining_tp = config.pretraining_tp
+        self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
@@ -55,6 +55,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
@@ -64,75 +65,45 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         images: Optional[torch.FloatTensor] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        input_ids, attention_mask, past_key_values, inputs_embeds, labels = self.prepare_inputs_labels_for_multimodal(input_ids, attention_mask, past_key_values, labels, images)
+        if inputs_embeds is None:
+            (
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                inputs_embeds,
+                labels
+            ) = self.prepare_inputs_labels_for_multimodal(
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                labels,
+                images
+            )
 
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.model(
+        return super().forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
+            labels=labels,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict
         )
 
-        hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states)
-
-        loss = None
-        if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
-            loss_fct = CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
-            shift_labels = shift_labels.view(-1)
-            # Enable model/pipeline parallelism
-            shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
-
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
-
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
+        images = kwargs.pop("images", None)
+        _inputs = super().prepare_inputs_for_generation(
+            input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
         )
-
-    def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
-    ):
-        if past_key_values:
-            input_ids = input_ids[:, -1:]
-
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids}
-
-        model_inputs.update(
-            {
-                "past_key_values": past_key_values,
-                "use_cache": kwargs.get("use_cache"),
-                "attention_mask": attention_mask,
-                "images": kwargs.get("images", None),
-            }
-        )
-        return model_inputs
+        if images is not None:
+            _inputs['images'] = images
+        return _inputs
 
 AutoConfig.register("llava", LlavaConfig)
 AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)
@@ -146,6 +117,7 @@ AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)
 from transformers.models.vit_mae.modeling_vit_mae import *
 from transformers.models.vit_mae.configuration_vit_mae import *
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from torch.nn import CrossEntropyLoss
 
 class LlavaGeoOutput(CausalLMOutputWithPast):
     def __init__(self, 
@@ -164,7 +136,6 @@ class LlavaGeoOutput(CausalLMOutputWithPast):
 # 1. take the encoded full sequence of image patch embeddings
 # 2. randomly mask out 75% (pick the 25%) and feed to the decoder: shuffle, then pick the first 25%, log the ids_restore => reference: https://github.com/huggingface/transformers/blob/acc394c4f5e1283c19783581790b3dc3105a3697/src/transformers/models/vit_mae/modeling_vit_mae.py#L232C14-L232C14
 # 3. => decoder: append the mask tokens, then unshuffle; then compute reconstruction loss on the masked patches
-
 
 class LlavaGeoConfigMAE(LlavaConfig):
     model_type = "llava_geo"
@@ -380,27 +351,17 @@ class LlavaGeoLlamaForCausalLMMAE(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
             attentions=lm_attentions,
         )
 
-    def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
-    ):
-        if past_key_values:
-            input_ids = input_ids[:, -1:]
-
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids}
-
-        model_inputs.update(
-            {
-                "past_key_values": past_key_values,
-                "use_cache": kwargs.get("use_cache"),
-                "attention_mask": attention_mask,
-                "images": kwargs.get("images", None),
-            }
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
+        images = kwargs.pop("images", None)
+        images_for_geo = kwargs.pop("images_for_geo", None)
+        _inputs = super().prepare_inputs_for_generation(
+            input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
         )
-        return model_inputs
+        if images is not None:
+            _inputs['images'] = images
+        if images_for_geo is not None:
+            _inputs['images_for_geo'] = images_for_geo
+        return _inputs
 
 ### Early Fusion ###
 
@@ -440,20 +401,24 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
+        self.load_geo_model_()
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def load_geo_model_(self):
         if getattr(self.config, "sam_config", None):
             self._build_sam_model()
         else:
             self.geo_config = None
 
-        # Initialize weights and apply final processing
-        self.post_init()
-
     def _build_sam_model(self):
         sam_args = self.config.sam_config
 
+        print("Loading SAM encoder from:", sam_args['base_config'])
         self.geo_image_processor = SamProcessor.from_pretrained(sam_args['base_config'])
-        self.geo_encoder = SamModel.from_pretrained(sam_args['base_config'])
-        self.geo_config = self.geo_encoder.config.vision_config
+        self.geo_encoder = SamModel.from_pretrained(sam_args['base_config']).vision_encoder
+        self.geo_config = self.geo_encoder.config
         
         # projection layer
         self.geo_to_llm_projector = nn.Linear(
@@ -466,12 +431,12 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 setattr(self.geo_config, key, sam_args[key])
 
     def encode_images_geo(self, pixel_values):
-        image_features_geo = self.geo_encoder.get_image_embeddings(pixel_values) # (batch_size, chanel_size, width, height)
+        vision_output = self.geo_encoder(pixel_values) # (batch_size, chanel_size, width, height)
+        image_features_geo = vision_output[0]     
         batch_size, num_channels, num_patch_width, num_patch_height = image_features_geo.shape # width = height = image_size // patch_size = 64 
         image_features_geo = image_features_geo.reshape(batch_size, num_channels, num_patch_width * num_patch_height)
         image_features_geo = self.geo_to_llm_projector(image_features_geo)
         return image_features_geo
-
 
     def get_model(self):
         return self.model
@@ -491,9 +456,9 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
             image_features = self.encode_images(concat_images)
             split_sizes = [image.shape[0] for image in images]
             image_features = torch.split(image_features, split_sizes, dim=0)
-            image_features = [x.flatten(0, 1) for x in image_features]
+            image_features = [x.flatten(0, 1).to(self.device) for x in image_features]
         else:
-            image_features = self.encode_images(images)
+            image_features = self.encode_images(images).to(self.device)
         
         # geo encode (e.g. SAM)
         if images_for_geo is not None:
@@ -502,9 +467,9 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 geo_image_features = self.encode_images_geo(concat_images_geo)
                 split_sizes = [image.shape[0] for image in images_for_geo]
                 geo_image_features = torch.split(geo_image_features, split_sizes, dim=0)
-                geo_image_features = [x.flatten(0, 1) for x in geo_image_features]
+                geo_image_features = [x.flatten(0, 1).to(self.device) for x in geo_image_features]
             else:
-                geo_image_features = self.encode_images_geo(images_for_geo)
+                geo_image_features = self.encode_images_geo(images_for_geo).to(self.device)
             # concat image features
             image_features = torch.cat([image_features, geo_image_features], dim=1)
 
@@ -609,7 +574,6 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
 
         return None, attention_mask, past_key_values, new_input_embeds, new_labels, image_features
 
-
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -669,7 +633,13 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 # Enable model/pipeline parallelism
                 shift_labels = shift_labels.to(shift_logits.device)
                 lm_loss = loss_fct(shift_logits, shift_labels)
-                print("lm loss:", lm_loss.item())
+                
+                # if loss is nan
+                if torch.isnan(lm_loss):
+                    print("lm loss:", lm_loss.item(), "shift_labels:", shift_labels, "shift_logits:", shift_logits)
+                else:
+                    print("lm loss:", lm_loss.item())
+
                 # import wandb; wandb.log({"lm_loss":lm_loss.item()})
                 losses['lm'] = lm_loss
             
@@ -699,24 +669,14 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
             attentions=lm_attentions,
         )
 
-    def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
-    ):
-        if past_key_values:
-            input_ids = input_ids[:, -1:]
-
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids}
-
-        model_inputs.update(
-            {
-                "past_key_values": past_key_values,
-                "use_cache": kwargs.get("use_cache"),
-                "attention_mask": attention_mask,
-                "images": kwargs.get("images", None),
-            }
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
+        images = kwargs.pop("images", None)
+        images_for_geo = kwargs.pop("images_for_geo", None)
+        _inputs = super().prepare_inputs_for_generation(
+            input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
         )
-        return model_inputs
+        if images is not None:
+            _inputs['images'] = images
+        if images_for_geo is not None:
+            _inputs['images_for_geo'] = images_for_geo
+        return _inputs
