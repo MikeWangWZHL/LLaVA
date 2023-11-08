@@ -31,9 +31,9 @@ GRAD_ACC_STEP=1 # 1
 # deepspeed --include localhost:1,2,3,4 llava/train/train_mem.py \
 # deepspeed --include localhost:2,3,4,5 llava/train/train_mem.py \
     # --deepspeed ${CODE_DIR}/scripts/zero3.json \
-deepspeed --include localhost:3 llava/train/train_mem.py \
+deepspeed --include localhost:3,4 llava/train/train_mem.py \
     --lora_enable True --lora_r 128 --lora_alpha 256 --mm_projector_lr 2e-5 \
-    --deepspeed ${CODE_DIR}/scripts/zero2.json \
+    --deepspeed ${CODE_DIR}/scripts/zero3.json \
     --model_name_or_path ${MODEL_PATH} \
     --version v1 \
     --data_path ${DATA_DIR}/llava_v1_5_mix665k.json \

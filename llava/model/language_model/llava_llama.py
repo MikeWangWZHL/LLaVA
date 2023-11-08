@@ -456,9 +456,9 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
             image_features = self.encode_images(concat_images)
             split_sizes = [image.shape[0] for image in images]
             image_features = torch.split(image_features, split_sizes, dim=0)
-            image_features = [x.flatten(0, 1) for x in image_features]
+            image_features = [x.flatten(0, 1).to(self.device) for x in image_features]
         else:
-            image_features = self.encode_images(images)
+            image_features = self.encode_images(images).to(self.device)
         
         # geo encode (e.g. SAM)
         if images_for_geo is not None:
@@ -467,9 +467,9 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 geo_image_features = self.encode_images_geo(concat_images_geo)
                 split_sizes = [image.shape[0] for image in images_for_geo]
                 geo_image_features = torch.split(geo_image_features, split_sizes, dim=0)
-                geo_image_features = [x.flatten(0, 1) for x in geo_image_features]
+                geo_image_features = [x.flatten(0, 1).to(self.device) for x in geo_image_features]
             else:
-                geo_image_features = self.encode_images_geo(images_for_geo)
+                geo_image_features = self.encode_images_geo(images_for_geo).to(self.device)
             # concat image features
             image_features = torch.cat([image_features, geo_image_features], dim=1)
 
