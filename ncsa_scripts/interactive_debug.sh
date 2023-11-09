@@ -17,7 +17,7 @@
 ### multiple gpu ###
 srun \
     -A bcdq-delta-gpu \
-    --time=00:15:00 \
+    --time=00:30:00 \
     --nodes=1 \
     --ntasks-per-node=16 \
     --tasks=1 \
