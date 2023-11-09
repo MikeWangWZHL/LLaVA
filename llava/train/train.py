@@ -1013,8 +1013,12 @@ def train():
         # if unfreeze sam projection layer
         model.config.tune_sam_adapter = training_args.tune_sam_adapter = model_args.tune_sam_adapter
         if model.config.tune_sam_adapter:
-            for p in model.geo_to_llm_projector.parameters():
-                p.requires_grad = True
+            if hasattr(model, 'geo_to_llm_projector'):
+                for p in model.geo_to_llm_projector.parameters():
+                    p.requires_grad = True
+            if hasattr(model, 'llm_to_geo_projector'):
+                for p in model.llm_to_geo_projector.parameters():
+                    p.requires_grad = True
 
         # if unfreeze vision tower
         model.config.tune_vision_tower = training_args.tune_vision_tower = model_args.tune_vision_tower
