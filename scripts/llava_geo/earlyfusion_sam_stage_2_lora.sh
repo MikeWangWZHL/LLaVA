@@ -3,7 +3,7 @@
 CODE_DIR="/data/wangz3/projects/ecole-gvs-method/third_party/LLaVA"
 DATA_DIR="/data/wangz3/projects/llava_data"
 
-SAVE_PER_STEPS=2000 # 24000
+SAVE_PER_STEPS=2500 # 24000
 LR=2e-4 # 2e-4
 
 # MODEL_PATH="lmsys/vicuna-13b-v1.5"
@@ -22,7 +22,9 @@ MODEL_TYPE="llava_geo_early_fusion"
 
 BITS=16 # 16
 BATCH_SIZE=16 # 16
-GRAD_ACC_STEP=1 # 1
+GRAD_ACC_STEP=2 # 1
+
+OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_7b/earlyfusion_stage_2_lora
 
 # NOTE: using fp16 instead of bf16 due to SAM model not implemented for bf16
     # --bf16 True \
@@ -30,10 +32,10 @@ GRAD_ACC_STEP=1 # 1
 
 # deepspeed --include localhost:1,2,3,4 llava/train/train_mem.py \
 # deepspeed --include localhost:2,3,4,5 llava/train/train_mem.py \
-    # --deepspeed ${CODE_DIR}/scripts/zero3.json \
-deepspeed --include localhost:3,4 llava/train/train_mem.py \
+    # --deepspeed ${CODE_DIR}/scripts/zero2.json \
+deepspeed --include localhost:1,4,5,6 llava/train/train_mem.py \
     --lora_enable True --lora_r 128 --lora_alpha 256 --mm_projector_lr 2e-5 \
-    --deepspeed ${CODE_DIR}/scripts/zero3.json \
+    --deepspeed ${CODE_DIR}/scripts/zero2.json \
     --model_name_or_path ${MODEL_PATH} \
     --version v1 \
     --data_path ${DATA_DIR}/llava_v1_5_mix665k.json \
@@ -45,7 +47,7 @@ deepspeed --include localhost:3,4 llava/train/train_mem.py \
     --mm_use_im_patch_token False \
     --fp16 True \
     --bits ${BITS} \
-    --output_dir ${CODE_DIR}/checkpoints/llava_geo_7b/earlyfusion_stage_2_lora \
+    --output_dir ${OUTPUT_DIR} \
     --num_train_epochs 1 \
     --per_device_train_batch_size ${BATCH_SIZE} \
     --per_device_eval_batch_size 4 \

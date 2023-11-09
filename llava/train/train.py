@@ -39,17 +39,7 @@ from PIL import Image
 from transformers import AutoImageProcessor, ViTMAEForPreTraining
 from transformers import SamProcessor, SamModel
 
-MODEL_TYPE_TO_MODEL_CLASS = {
-    "llava": LlavaLlamaForCausalLM,
-    "llava_geo_mae": LlavaGeoLlamaForCausalLMMAE,
-    "llava_geo_early_fusion": LlavaGeoLlamaForCausalLMEarlyFusion
-}
-
-MODEL_TYPE_TO_CONFIG_CLASS = {
-    "llava": LlavaConfig,
-    "llava_geo_mae": LlavaGeoConfigMAE,
-    "llava_geo_early_fusion": LlavaGeoConfigEarlyFusion
-}
+from llava.model_classes import MODEL_TYPE_TO_MODEL_CLASS, MODEL_TYPE_TO_CONFIG_CLASS
 
 
 local_rank = None
@@ -1073,11 +1063,34 @@ def train():
         rank0_print("Trainable params size (showing zero if using zero3 deepspeed):", trainable_param_size)
     
     # import pdb; pdb.set_trace()
-    
+
+
+    # save intermediate non-lora-trainables
+    from transformers import TrainerCallback
+    def save_non_lora_trainables(args, output_dir):
+        state_dict = get_peft_state_maybe_zero_3(
+            model.named_parameters(), args.lora_bias
+        )
+        non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(
+            model.named_parameters()
+        )
+        if args.local_rank in [-1, 0]:
+            model.config.save_pretrained(output_dir)
+            model.save_pretrained(output_dir, state_dict=state_dict)
+            torch.save(non_lora_state_dict, os.path.join(output_dir, 'non_lora_trainables.bin'))
+
+    class SaveCallback(TrainerCallback):
+        def on_save(self, args, state, control, **kwargs):
+            checkpoint_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(state.global_step))
+            if args.lora_enable:
+                save_non_lora_trainables(args, checkpoint_dir)
+
+
     rank0_print("\n\nTraining arguments:", training_args)
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,
+                    callbacks=[SaveCallback()],
                     **data_module)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
@@ -1089,19 +1102,13 @@ def train():
     model.config.use_cache = True
 
     if training_args.lora_enable:
-        state_dict = get_peft_state_maybe_zero_3(
-            model.named_parameters(), training_args.lora_bias
-        )
-        non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(
-            model.named_parameters()
-        )
-        if training_args.local_rank == 0 or training_args.local_rank == -1:
-            model.config.save_pretrained(training_args.output_dir)
-            model.save_pretrained(training_args.output_dir, state_dict=state_dict)
-            torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, 'non_lora_trainables.bin'))
+        save_non_lora_trainables(training_args, training_args.output_dir)
     else:
         safe_save_model_for_hf_trainer(trainer=trainer,
                                        output_dir=training_args.output_dir)
+
+
+
 
 if __name__ == "__main__":
     train()
