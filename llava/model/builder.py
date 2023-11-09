@@ -245,7 +245,7 @@ def load_pretrained_model_geo(model_path, model_base, model_name, load_8bit=Fals
             for name, param in model.named_parameters():
                 print(name, param.device, param.dtype)
             
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
 
         elif model_base is not None:
             # this may be mm projector only
