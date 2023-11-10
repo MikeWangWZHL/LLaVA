@@ -4,6 +4,8 @@ from .language_model.llava_llama import (
     LlavaGeoConfigMAE, 
     LlavaGeoLlamaForCausalLMMAE,
     LlavaGeoLlamaForCausalLMEarlyFusion,
-    LlavaGeoConfigEarlyFusion
+    LlavaGeoConfigEarlyFusion,
+    LlavaGeoLlamaForCausalLMKD,
+    LlavaGeoConfigKD
 )
 from .language_model.llava_mpt import LlavaMPTForCausalLM, LlavaMPTConfig

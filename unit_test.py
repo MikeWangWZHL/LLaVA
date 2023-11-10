@@ -69,16 +69,20 @@ from llava.mm_utils import process_images, tokenizer_image_token, get_model_name
 
 
 
-import json
-# check instruction tuning dataset, if there are multi image instance?
-data = json.load(open('/scratch/bcdq/wangz3/llava_data/llava_v1_5_mix665k.json'))
-print(len(data))
+# import json
+# # check instruction tuning dataset, if there are multi image instance?
+# data = json.load(open('/scratch/bcdq/wangz3/llava_data/llava_v1_5_mix665k.json'))
+# print(len(data))
 
-for item in data:
-    for message in item['conversations']:
-        if message["from"] == "human":
-            # if <image> appears more than once, then it is multi image instance
-            if message["value"].count("<image>") > 1:
-                print(item)
+# for item in data:
+#     for message in item['conversations']:
+#         if message["from"] == "human":
+#             # if <image> appears more than once, then it is multi image instance
+#             if message["value"].count("<image>") > 1:
+#                 print(item)
+
+
+from transformers import SamModel
+model = SamModel.from_pretrained("facebook/sam-vit-base").vision_encoder
 
 import pdb; pdb.set_trace()

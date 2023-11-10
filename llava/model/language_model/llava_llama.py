@@ -624,8 +624,6 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
         input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels, image_features \
             = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, images_for_geo)
 
-        # import pdb; pdb.set_trace()
-
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
@@ -684,8 +682,6 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
-        # import pdb; pdb.set_trace()
-
         return LlavaGeoOutput(
             loss=loss,
             lm_loss=lm_loss,
@@ -724,7 +720,20 @@ class LlavaGeoConfigKD(LlavaGeoConfigEarlyFusion):
 
 import torch.nn.functional as F
 class CosineSimilarityDistillationLoss(nn.Module):
+    # # Example usage:
+    # teacher_logits = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]) # Hypothetical logits from teacher
+    # student_logits = torch.tensor([[1.5, 2.5, 3.5], [3.0, 5.0, 7.0]]) # Hypothetical logits from student
+
+    # # Initialize the cosine similarity distillation loss
+    # temperature = 5.0 # Adjust the temperature to control the smoothing
+    # distillation_loss_fn = CosineSimilarityDistillationLoss(temperature=temperature)
+
+    # # Compute the loss
+    # distillation_loss = distillation_loss_fn(student_logits, teacher_logits)
+    # print(distillation_loss)
+
     def __init__(self, temperature=1.0):
+
         super(CosineSimilarityDistillationLoss, self).__init__()
         self.temperature = temperature
         self.cosine_similarity = nn.CosineSimilarity(dim=1)
@@ -742,19 +751,6 @@ class CosineSimilarityDistillationLoss(nn.Module):
         loss = 1 - cosine_sim.mean()
         return loss
 
-        # # Example usage:
-        # teacher_logits = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]) # Hypothetical logits from teacher
-        # student_logits = torch.tensor([[1.5, 2.5, 3.5], [3.0, 5.0, 7.0]]) # Hypothetical logits from student
-
-        # # Initialize the cosine similarity distillation loss
-        # temperature = 5.0 # Adjust the temperature to control the smoothing
-        # distillation_loss_fn = CosineSimilarityDistillationLoss(temperature=temperature)
-
-        # # Compute the loss
-        # distillation_loss = distillation_loss_fn(student_logits, teacher_logits)
-        # print(distillation_loss)
-
-
 
 class LlavaGeoLlamaForCausalLMKD(LlavaGeoLlamaForCausalLMEarlyFusion):
     config_class = LlavaGeoConfigKD
@@ -762,7 +758,9 @@ class LlavaGeoLlamaForCausalLMKD(LlavaGeoLlamaForCausalLMEarlyFusion):
     def __init__(self, config):
         super().__init__(config)
 
-    # TODO
+        cos_kd_loss_temp = getattr(self.config, 'cos_kd_loss_temp', 1.0)
+        self.kd_loss_fn = CosineSimilarityDistillationLoss(temperature=cos_kd_loss_temp)
+
     def _build_sam_model(self):
         sam_args = self.config.sam_config
 
@@ -772,9 +770,12 @@ class LlavaGeoLlamaForCausalLMKD(LlavaGeoLlamaForCausalLMEarlyFusion):
         self.geo_config = self.geo_encoder.config
         
         # projection layer
-        self.geo_to_llm_projector = nn.Linear(
-            (self.geo_config.image_size // self.geo_config.patch_size) ** 2, self.config.hidden_size
-        ) # 64 * 64 = 4096 => 4096
+        # self.geo_to_llm_projector = nn.Linear(
+        #     (self.geo_config.image_size // self.geo_config.patch_size) ** 2, self.config.hidden_size
+        # ) # 64 * 64 = 4096 => 4096
+        self.llm_to_geo_projector = nn.Linear(
+            self.config.hidden_size, self.geo_config.output_channels
+        ) # 4096 -> 256
 
         # specify image size and patch size
         for key in sam_args:
@@ -930,6 +931,7 @@ class LlavaGeoLlamaForCausalLMKD(LlavaGeoLlamaForCausalLMEarlyFusion):
                     attention_mask[i, :cur_len] = True
                     position_ids[i, :cur_len] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
                 # no need to pad image_start_end_indices if padding is on the right
+                new_image_start_end_indices_padded.append(image_start_end_indices[i])
 
         new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
 
@@ -949,39 +951,69 @@ class LlavaGeoLlamaForCausalLMKD(LlavaGeoLlamaForCausalLMEarlyFusion):
         assert len(new_image_start_end_indices_padded) == batch_size
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, image_features, new_image_start_end_indices_padded 
 
+    def encode_images_geo_raw(self, pixel_values):
+        vision_output = self.geo_encoder(pixel_values) 
+        image_features_geo = vision_output[0]     
+        # batch_size, num_channels, num_patch_width, num_patch_height = image_features_geo.shape # width = height = image_size // patch_size = 64 
+        # image_features_geo = image_features_geo.reshape(batch_size, num_channels, num_patch_width * num_patch_height)
+        # image_features_geo = self.geo_to_llm_projector(image_features_geo)
+        return image_features_geo
+
     def get_kd_teacher(self, images_for_geo):
-        # TODO:
-        if type(images_for_geo) is list or images_for_geo.ndim == 5:
-            concat_images_geo = torch.cat([image for image in images_for_geo], dim=0)
-            geo_image_features = self.encode_images_geo(concat_images_geo)
-            split_sizes = [image.shape[0] for image in images_for_geo]
-            geo_image_features = torch.split(geo_image_features, split_sizes, dim=0)
-            geo_image_features = [x.to(self.device) for x in geo_image_features] # [(m, num_channels, llm_hidden_size), ...]
-            # geo_image_features = [x.flatten(0, 1).to(self.device) for x in geo_image_features] # [(m * num_channels, llm_hidden_size), ...]
-        else:
-            geo_image_features = self.encode_images_geo(images_for_geo).to(self.device) # (batch_size, num_channels, llm_hidden_size)
+        # assert one image for each instance
+        assert images_for_geo.ndim == 4
+        # if type(images_for_geo) is list or images_for_geo.ndim == 5:
+        #     concat_images_geo = torch.cat([image for image in images_for_geo], dim=0)
+        #     geo_image_features = self.encode_images_geo_raw(concat_images_geo)
+        #     split_sizes = [image.shape[0] for image in images_for_geo]
+        #     geo_image_features = torch.split(geo_image_features, split_sizes, dim=0)
+        #     geo_image_features = [x.to(self.device) for x in geo_image_features] # [(m, num_channels, width, height), ...]
+        # else:
+
+        geo_image_features = self.encode_images_geo_raw(images_for_geo).to(self.device) # (batch_size, num_channels, width, height)
         
+        # # reshape to (batch_size, width * height, num_channels)
+        # if type(geo_image_features) is list:
+        #     batch_size = len(geo_image_features)
+        #     _, num_channels, width, height = geo_image_features[0].shape
+        #     geo_image_features = [x.reshape(x.shape[0], -1, num_channels) for x in geo_image_features]
+        # else:
+        batch_size, num_channels, width, height = geo_image_features.shape
+        geo_image_features = geo_image_features.reshape(batch_size, -1, num_channels) # (b, 4096, 256)
+
         # global max pooling
-        if type(geo_image_features) is list:
-            teacher = [torch.max(x, dim=1)[0] for x in geo_image_features] # [(m, llm_hidden_size), ...]
-        else:
-            teacher = torch.max(geo_image_features, dim=1)[0] # (batch_size, llm_hidden_size)    
+        # if type(geo_image_features) is list:
+        #     teacher = [torch.max(x, dim=1)[0] for x in geo_image_features] # [(m, geo_hidden_size), ...]
+        # else:
+        teacher = torch.max(geo_image_features, dim=1)[0] # (batch_size, geo_hidden_size)    
+        
         return teacher
     
-    def get_kd_student(self, llm_hidden_states, image_start_end_indices):
-        # TODO:
-        # llm_hidden_states: [(batch_size, seq_len, llm_hidden_size), ...]
-        # image_start_end_indices: [(m, 2), ...]
-        student = []
+    def get_kd_student(self, llm_hidden_states, image_start_end_indices, image_features):
+        assert llm_hidden_states.ndim == 3
+        assert image_features.ndim == 3
+        num_patches = image_features.shape[1]
+        students = []
+        has_image_indices = []
         for i, cur_hidden_states in enumerate(llm_hidden_states):
             cur_image_start_end_indices = image_start_end_indices[i]
             if cur_image_start_end_indices == []:
+                # dummy_student = torch.zeros_like(cur_hidden_states[0:num_patches])
+                # dummy_student = torch.zeros((num_patches, self.geo_config.output_channels), device=self.device, dtype=cur_hidden_states.dtype)
+                # students.append(dummy_student)
                 continue
             else:
-                cur_student = []
-                for l,r in cur_image_start_end_indices:
-                    cur_student.append(torch.max(cur_hidden_states[l:r], dim=0)[0])
-
+                assert len(cur_image_start_end_indices) == 1
+                l, r = cur_image_start_end_indices[0]
+                cur_student = cur_hidden_states[l:r]
+                cur_student = self.llm_to_geo_projector(cur_student)
+                students.append(cur_student)
+                has_image_indices.append(i)
+        
+        student = torch.stack(students, dim=0) # (batch_size, num_patches, geo_hidden_size)
+        # max pooling
+        student = torch.max(student, dim=1)[0]
+        return student, has_image_indices
 
     def forward(
         self,
@@ -1046,20 +1078,24 @@ class LlavaGeoLlamaForCausalLMKD(LlavaGeoLlamaForCausalLMEarlyFusion):
                 shift_labels = shift_labels.to(shift_logits.device)
                 lm_loss = loss_fct(shift_logits, shift_labels)
                 
-                # if loss is nan
-                if torch.isnan(lm_loss):
-                    print("lm loss:", lm_loss.item(), "shift_labels:", shift_labels, "shift_logits:", shift_logits)
-                else:
-                    print("lm loss:", lm_loss.item())
-
-                # import wandb; wandb.log({"lm_loss":lm_loss.item()})
+                print("lm loss (reweighted) | weighting factor:", lm_loss.item() * self.config.loss_weights['lm'], self.config.loss_weights['lm'])
                 losses['lm'] = lm_loss
             
             if "kd" in self.config.losses:
                 teacher = self.get_kd_teacher(images_for_geo)
-                student = self.get_kd_student(hidden_states, image_start_end_indices)
-            
-            
+                student, has_image_indice = self.get_kd_student(hidden_states, image_start_end_indices, image_features)
+
+                # filter out instances without image
+                teacher = teacher[has_image_indice]
+                assert len(teacher) == len(student)
+
+                kd_loss = self.kd_loss_fn(student, teacher)
+
+                print("kd loss (reweighted) | weighting factor:", kd_loss.item() * self.config.loss_weights['kd'], self.config.loss_weights['kd'])
+                losses['kd'] = kd_loss
+
+            # import pdb; pdb.set_trace()
+
             for key in losses:
                 if loss is None:
                     loss = losses[key] * self.config.loss_weights[key]
