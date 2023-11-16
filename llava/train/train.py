@@ -755,11 +755,14 @@ class LazySupervisedDataset(Dataset):
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
             data_dict['images'] = torch.zeros(3, crop_size['height'], crop_size['width'])
-            if isinstance(self.data_args.geo_image_processor, SamProcessor):
-                geo_crop_size = {'height': 1024, 'width': 1024}
-            else:
-                geo_crop_size = self.data_args.geo_image_processor.size
-            data_dict['geo_images'] = torch.zeros(3, geo_crop_size['height'], geo_crop_size['width'])
+            
+            if self.data_args.geo_image_processor is not None:
+                if isinstance(self.data_args.geo_image_processor, SamProcessor):
+                    geo_crop_size = {'height': 1024, 'width': 1024}
+                else:
+                    geo_crop_size = self.data_args.geo_image_processor.size
+                data_dict['geo_images'] = torch.zeros(3, geo_crop_size['height'], geo_crop_size['width'])
+
         return data_dict
 
 
@@ -908,8 +911,6 @@ def train():
 
     if training_args.lora_enable:
 
-        # import pdb; pdb.set_trace()
-
         from peft import LoraConfig, get_peft_model
         lora_config = LoraConfig(
             r=training_args.lora_r,
@@ -972,6 +973,9 @@ def train():
         data_args.image_processor = vision_tower.image_processor
         if 'llava_geo' in model_args.model_type:
             data_args.geo_image_processor = model.geo_image_processor
+        else:
+            data_args.geo_image_processor = None
+
 
         data_args.is_multimodal = True
 
@@ -1065,8 +1069,6 @@ def train():
         model.print_trainable_parameters()
     else:
         rank0_print("Trainable params size (showing zero if using zero3 deepspeed):", trainable_param_size)
-    
-    # import pdb; pdb.set_trace()
 
 
     # save intermediate non-lora-trainables
@@ -1091,6 +1093,8 @@ def train():
 
 
     rank0_print("\n\nTraining arguments:", training_args)
+
+    import pdb; pdb.set_trace()
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,

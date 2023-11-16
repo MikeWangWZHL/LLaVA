@@ -75,7 +75,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             if any(k.startswith('model.model.') for k in non_lora_trainables):
                 non_lora_trainables = {(k[6:] if k.startswith('model.') else k): v for k, v in non_lora_trainables.items()}
             model.load_state_dict(non_lora_trainables, strict=False)
-
+            print('Loading non_lora_trainables:', non_lora_trainables.keys())
             from peft import PeftModel
             print('Loading LoRA weights...')
             model = PeftModel.from_pretrained(model, model_path)
@@ -161,6 +161,8 @@ def get_model_type_from_model_name(model_name):
         return "llava_geo_mae"
     elif "geo_early_fusion" in model_name.lower():
         return "llava_geo_early_fusion"
+    elif "geo_kd" in model_name.lower():
+        return "llava_geo_kd"
     else:
         return "llava"
 

@@ -124,12 +124,14 @@ class LlavaGeoOutput(CausalLMOutputWithPast):
                  lm_loss: Optional[torch.FloatTensor] = None, 
                  reconstruction_loss: Optional[torch.FloatTensor] = None, 
                  reconstruction_logits: torch.FloatTensor = None, 
+                 image_start_end_indices: Optional[List] = None,
                  *args, **kwargs):
         super().__init__(*args, **kwargs)
         
         self.lm_loss = lm_loss
         self.reconstruction_loss = reconstruction_loss
         self.reconstruction_logits = reconstruction_logits
+        self.image_start_end_indices = image_start_end_indices
 
 ### adding ViT MAE Decoder: do MAE loss on CLIP-projected patch embeddings
 
@@ -795,7 +797,7 @@ class LlavaGeoLlamaForCausalLMKD(LlavaGeoLlamaForCausalLMEarlyFusion):
                     device=attention_mask.device
                 )), dim=1)
                 position_ids = torch.sum(attention_mask, dim=1).unsqueeze(-1) - 1
-            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None, None, None
+            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None, None
 
         # clip encode
         if type(images) is list or images.ndim == 5:
@@ -1117,6 +1119,7 @@ class LlavaGeoLlamaForCausalLMKD(LlavaGeoLlamaForCausalLMEarlyFusion):
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            image_start_end_indices=image_start_end_indices
         )
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
