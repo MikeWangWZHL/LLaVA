@@ -585,6 +585,7 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                     attention_mask[i, :cur_len] = True
                     position_ids[i, :cur_len] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
 
+
         new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
 
         if _labels is None:
@@ -599,6 +600,10 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
 
         if _position_ids is None:
             position_ids = None
+        
+        for label in new_labels:
+            if (label == IGNORE_INDEX).all():
+                print("ERROR: all label is IGNORE_INDEX, something is wrong")
 
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, image_features
 
@@ -625,7 +630,9 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
 
         input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels, image_features \
             = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, images_for_geo)
-
+        
+        # import pdb; pdb.set_trace()
+        
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
@@ -665,6 +672,9 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 # if loss is nan
                 if torch.isnan(lm_loss):
                     print("lm loss:", lm_loss.item(), "shift_labels:", shift_labels, "shift_logits:", shift_logits)
+                    for l in shift_labels:
+                        print(l.item())
+                    # import pdb; pdb.set_trace()
                 else:
                     print("lm loss:", lm_loss.item())
 

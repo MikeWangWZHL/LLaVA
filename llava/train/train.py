@@ -499,7 +499,6 @@ def preprocess_v1(
                     f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
                     f" (ignored)"
                 )
-
     return dict(
         input_ids=input_ids,
         labels=targets,
@@ -706,6 +705,8 @@ class LazySupervisedDataset(Dataset):
                 return self.__getitem__(idx)
 
             geo_image = None
+            # make a deep copy of the original image
+            original_image = copy.deepcopy(image)
             if self.data_args.image_aspect_ratio == 'pad':
                 def expand2square(pil_img, background_color):
                     width, height = pil_img.size
@@ -721,16 +722,17 @@ class LazySupervisedDataset(Dataset):
                         return result
                 image_pil = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
                 image = processor.preprocess(image_pil, return_tensors='pt')['pixel_values'][0]
+                
                 if geo_processor is not None:
                     if isinstance(geo_processor, SamProcessor):
                         geo_image_mean = geo_processor.image_processor.image_mean
                     else:
                         geo_image_mean = geo_processor.image_mean
-                    geo_image_pil = expand2square(image_pil, tuple(int(x*255) for x in geo_image_mean))
+                    geo_image_pil = expand2square(original_image, tuple(int(x*255) for x in geo_image_mean))
                     geo_image = geo_processor(images=geo_image_pil, return_tensors="pt")['pixel_values'][0]
             else:
                 if geo_processor is not None:
-                    geo_image = geo_processor(images=image, return_tensors="pt")['pixel_values'][0]
+                    geo_image = geo_processor(images=original_image, return_tensors="pt")['pixel_values'][0]
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
 
             sources = preprocess_multimodal(
@@ -762,6 +764,12 @@ class LazySupervisedDataset(Dataset):
                 else:
                     geo_crop_size = self.data_args.geo_image_processor.size
                 data_dict['geo_images'] = torch.zeros(3, geo_crop_size['height'], geo_crop_size['width'])
+
+        # if every element in labels is IGNORE_INDEX: print warning
+        if (data_dict['labels'] == IGNORE_INDEX).all():
+            print(sources)
+            print(data_dict['labels'])
+            print(f"ERROR: Labels are all IGNORE_INDEX: {data_dict['labels']}")
 
         return data_dict
 
@@ -1093,8 +1101,8 @@ def train():
 
 
     rank0_print("\n\nTraining arguments:", training_args)
-
-    import pdb; pdb.set_trace()
+    
+    # import pdb; pdb.set_trace()
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,
