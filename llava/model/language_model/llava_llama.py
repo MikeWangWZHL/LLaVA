@@ -601,9 +601,10 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
         if _position_ids is None:
             position_ids = None
         
-        for label in new_labels:
-            if (label == IGNORE_INDEX).all():
-                print("ERROR: all label is IGNORE_INDEX, something is wrong")
+        # if new_labels is not None:
+        #     for label in new_labels:
+        #         if (label == IGNORE_INDEX).all():
+        #             print("ERROR: all label is IGNORE_INDEX, something is wrong")
 
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, image_features
 

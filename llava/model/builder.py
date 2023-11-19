@@ -243,9 +243,9 @@ def load_pretrained_model_geo(model_path, model_base, model_name, load_8bit=Fals
 
             model.to(device=model.device, dtype=torch.float16)
 
-            # inspect the device of all model parameters
-            for name, param in model.named_parameters():
-                print(name, param.device, param.dtype)
+            # # inspect the device of all model parameters
+            # for name, param in model.named_parameters():
+            #     print(name, param.device, param.dtype)
             
             # import pdb; pdb.set_trace()
 
