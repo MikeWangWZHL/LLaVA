@@ -382,6 +382,9 @@ class LlavaGeoConfigEarlyFusion(LlavaConfig):
         "lm": 1.0,
         # "sam": 1.0
     }
+    geo_projector_type = "linear" # mlp
+    img_feature_concat_order = "semantic_first" # "geometric_first"
+
     def __repr__(self):
         parent_repr = super().__repr__()  # Gets the representation from the parent class
         # all attribute values
@@ -389,12 +392,13 @@ class LlavaGeoConfigEarlyFusion(LlavaConfig):
                 f"\"sam_config\": {self.sam_config}, "
                 f"\"losses\": {self.losses}, "
                 f"\"loss_weights\": {self.loss_weights}, "
+                f"\"geo_projector_type\": {self.geo_projector_type}, "
         )
 
 import wandb
 from transformers import SamModel, SamProcessor
 from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-
+import re
 
 class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausalLM):
     config_class = LlavaGeoConfigEarlyFusion
@@ -405,10 +409,18 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
+        self.config.geo_projector_type = getattr(self.config, "geo_projector_type", "linear")
+        self.config.img_feature_concat_order = getattr(self.config, "img_feature_concat_order", "semantic_first")
+
         self.load_geo_model_()
 
         # Initialize weights and apply final processing
         self.post_init()
+
+
+        print("geo_projector_type:", self.config.geo_projector_type)
+        print("img_feature_concat_order:", self.config.img_feature_concat_order)
+
 
     def load_geo_model_(self):
         if getattr(self.config, "sam_config", None):
@@ -424,10 +436,22 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
         self.geo_encoder = SamModel.from_pretrained(sam_args['base_config']).vision_encoder
         self.geo_config = self.geo_encoder.config
         
-        # projection layer
-        self.geo_to_llm_projector = nn.Linear(
-            (self.geo_config.image_size // self.geo_config.patch_size) ** 2, self.config.hidden_size
-        ) # 64 * 64 = 4096 => 4096
+        # projection layers
+        in_dim = (self.geo_config.image_size // self.geo_config.patch_size) ** 2
+        out_dim = self.config.hidden_size
+        if self.config.geo_projector_type == "linear":
+            self.geo_to_llm_projector = nn.Linear(
+               in_dim , self.config.hidden_size
+            ) # 64 * 64 = 4096 => 4096
+        elif self.config.geo_projector_type == "mlp":
+            modules = [
+                nn.Linear(in_dim, out_dim // 2), # 4096 => 2048
+                nn.GELU(),
+                nn.Linear(out_dim // 2, out_dim) # 2048 => 4096
+            ]
+            self.geo_to_llm_projector = nn.Sequential(*modules)
+        else:
+            raise NotImplementedError(f"geo_projector_type: {self.config.geo_projector_type} is not implemented yet")
 
         # specify image size and patch size
         for key in sam_args:
@@ -481,8 +505,13 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
             else:
                 geo_image_features = self.encode_images_geo(images_for_geo).to(self.device)
             # concat image features
-            image_features = torch.cat([image_features, geo_image_features], dim=1)
-
+            if self.config.img_feature_concat_order == "semantic_first":
+                image_features = torch.cat([image_features, geo_image_features], dim=1)
+            elif self.config.img_feature_concat_order == "geometric_first":
+                image_features = torch.cat([geo_image_features, image_features], dim=1)
+            else:
+                raise NotImplementedError(f"img_feature_concat_order: {self.config.img_feature_concat_order} is not implemented yet")
+            
         # TODO: image start / end is not implemented here to support pretraining.
         if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
             raise NotImplementedError

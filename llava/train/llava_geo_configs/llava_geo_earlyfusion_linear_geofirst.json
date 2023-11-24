@@ -8,5 +8,5 @@
         "lm": 1.0
     },
     "geo_projector_type": "linear",
-    "img_feature_concat_order": "semantic_first"
+    "img_feature_concat_order": "geometric_first"
 }

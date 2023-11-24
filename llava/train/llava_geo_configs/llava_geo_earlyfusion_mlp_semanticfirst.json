@@ -7,6 +7,6 @@
     "loss_weights": {
         "lm": 1.0
     },
-    "geo_projector_type": "linear",
+    "geo_projector_type": "mlp",
     "img_feature_concat_order": "semantic_first"
 }

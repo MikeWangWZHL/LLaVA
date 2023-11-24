@@ -1110,6 +1110,7 @@ def train():
                     **data_module)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+        print("Resuming from checkpoint...")
         trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
