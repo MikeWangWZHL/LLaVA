@@ -89,8 +89,6 @@ def eval_model(args):
         #     print(f'[Warning] {n_diff_input_output} output_ids are not the same as the input_ids')
         # outputs = tokenizer.batch_decode(output_ids[:, input_token_len:], skip_special_tokens=True)[0]
 
-        import pdb; pdb.set_trace()
-
         outputs = run_model_single_inference(
                 model, 
                 tokenizer, 
@@ -103,8 +101,6 @@ def eval_model(args):
         if outputs.endswith(stop_str):
             outputs = outputs[:-len(stop_str)]
         outputs = outputs.strip()
-
-        import pdb; pdb.set_trace()
 
         ans_id = shortuuid.uuid()
         ans_file.write(json.dumps({"question_id": idx,

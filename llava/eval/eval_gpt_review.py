@@ -16,7 +16,7 @@ def get_eval(content: str, max_tokens: int):
     while True:
         try:
             client = OpenAI()
-            response = client.chat.completions(
+            response = client.chat.completions.create(
                 model='gpt-4-1106-preview',
                 messages=[{
                     'role': 'system',
