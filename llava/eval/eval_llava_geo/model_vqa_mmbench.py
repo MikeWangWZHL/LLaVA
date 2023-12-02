@@ -66,9 +66,9 @@ def eval_model(args):
     os.makedirs(os.path.dirname(answers_file), exist_ok=True)
     ans_file = open(answers_file, "w")
 
-    if 'plain' in model_name and 'finetune' not in model_name.lower() and 'mmtag' not in args.conv_mode:
-        args.conv_mode = args.conv_mode + '_mmtag'
-        print(f'It seems that this is a plain model, but it is not using a mmtag prompt, auto switching to {args.conv_mode}.')
+    # if 'plain' in model_name and 'finetune' not in model_name.lower() and 'mmtag' not in args.conv_mode:
+    #     args.conv_mode = args.conv_mode + '_mmtag'
+    #     print(f'It seems that this is a plain model, but it is not using a mmtag prompt, auto switching to {args.conv_mode}.')
 
     for index, row in tqdm(questions.iterrows(), total=len(questions)):
         options = get_options(row, all_options)

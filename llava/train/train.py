@@ -69,6 +69,7 @@ class ModelArguments:
     tune_sam_adapter: bool = field(default=False)
     tune_vision_tower: bool = field(default=False)
     tune_llm: bool = field(default=False)
+    use_geo_image_features_only: bool = field(default=False)
 
 
 @dataclass
@@ -876,9 +877,11 @@ def train():
             llava_geo_config_dict = json.load(open(model_args.llava_geo_config_path, 'r'))
 
             config.update(llava_geo_config_dict)
+            config.use_geo_image_features_only = model_args.use_geo_image_features_only
             config._name_or_path = model_args.model_name_or_path
 
             rank0_print("Model class:", model_cls)
+            rank0_print("Model Config:", config)
             model = model_cls.from_pretrained(
                 model_args.model_name_or_path,
                 config=config,

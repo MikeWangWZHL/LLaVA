@@ -4,25 +4,21 @@ DATA_DIR="/data/wangz3/projects/llava_data"
 GEO_DATA_DIR="/data/wangz3/projects/llava_data/geo-mix"
 DEEPSPEED="zero2"
 
-### job 1: stage 1 with geo-l1l2 + ori all
 # ### stage 1 ###
 SAVE_PER_STEPS=1000 # 24000
 BITS=16 # 16
 BATCH_SIZE=16 # 16
 GRAD_ACC_STEP=2 # 1
 
-MODEL_PATH="lmsys/vicuna-7b-v1.5"
-PRETRAINED_PROJECTOR_PATH="./checkpoints/projectors/llava-v1.5-mlp2x-336px-pretrain-vicuna-7b-v1.5/mm_projector.bin"
-
 MODEL_TYPE="llava_geo_early_fusion"
-LR=2e-4 # 2e-4
+LR=1e-4 # 2e-4
 
-OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-558k_geo-l1l2-88k_stage1_v2
-
-DATA_PATH=${DATA_DIR}/llava_geo_mix_merged_v2_stage1_ori-558k_geo-l1l2-88k.json
+MODEL_PATH="liuhaotian/llava-v1.5-7b"
+OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-55k_only_stage1_v2
+DATA_PATH=${DATA_DIR}/llava_geo_mix_merged_v2_stage1_ori-55k_seperated.json
 
 # deepspeed --include localhost:4 llava/train/train_mem.py \
-deepspeed --include localhost:0,1,2,3 --master_port 29501 llava/train/train_mem.py \
+deepspeed --include localhost:4,5,6,7 llava/train/train_mem.py \
     --deepspeed ${CODE_DIR}/scripts/${DEEPSPEED}.json \
     --model_name_or_path ${MODEL_PATH} \
     --version plain \
@@ -30,7 +26,6 @@ deepspeed --include localhost:0,1,2,3 --master_port 29501 llava/train/train_mem.
     --image_folder ${DATA_DIR} \
     --vision_tower openai/clip-vit-large-patch14-336 \
     --mm_projector_type mlp2x_gelu \
-    --pretrain_mm_mlp_adapter ${PRETRAINED_PROJECTOR_PATH} \
     --mm_vision_select_layer -2 \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \
@@ -61,29 +56,24 @@ deepspeed --include localhost:0,1,2,3 --master_port 29501 llava/train/train_mem.
     --tune_mm_mlp_adapter False \
     --tune_sam_adapter True
 
-
-
-### job 2: stage 2 with geo-l1l2 + ori all
+### job 2: stage 1 with geo-l1 + ori 5%
 # #### stage 2 ####
 
-echo "running job 2 from checkpoint ..."
 SAVE_PER_STEPS=1000 # 1000
 
-MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-558k_geo-l1l2-88k_stage1_v2
-OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-665k_geo-l1l2-88k_stage2_v2_lora
-
-DATA_PATH=${DATA_DIR}/llava_geo_mix_merged_v2_stage2_ori-665k_geo-l1l2-88k.json
-
+MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-55k_only_stage1_v2
+OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-55k_only_stage2_v2_lora
+DATA_PATH=${DATA_DIR}/llava_geo_mix_merged_v2_stage2_ori-33k_seperated.json
 
 MODEL_TYPE="llava_geo_early_fusion"
-LR=2e-4
+LR=1e-4
 PROJ_LR=2e-5
 
 BITS=16 # 16
 BATCH_SIZE=8 # 16
 GRAD_ACC_STEP=2 # 1
 
-deepspeed --include localhost:0,1,2,3 --master_port 29501 llava/train/train_mem.py \
+deepspeed --include localhost:4,5,6,7 llava/train/train_mem.py \
     --lora_enable True --lora_r 128 --lora_alpha 256 --mm_projector_lr ${PROJ_LR} \
     --deepspeed ${CODE_DIR}/scripts/${DEEPSPEED}.json \
     --model_name_or_path ${MODEL_PATH} \
@@ -124,3 +114,10 @@ deepspeed --include localhost:0,1,2,3 --master_port 29501 llava/train/train_mem.
 
 
 
+CUDA_ID=5
+MODEL_BASE=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-55k_only_stage1_v2
+MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-55k_only_stage2_v2_lora
+MODEL_NAME="llava_geo_early_fusion_7b_ori-55k_only_stage2_v2_lora"
+
+cd /data/wangz3/projects/ecole-gvs-method
+bash scripts/_run_eval_everything_lora.sh $CUDA_ID $MODEL_NAME $MODEL_BASE $MODEL_PATH

@@ -17,3 +17,5 @@ MODEL_NAME=original_llava_7b_finetune_ori-33k_geo_l1-69k_v2_lora
 MODEL_BASE="liuhaotian/llava-v1.5-7b"
 MODEL_PATH="/data/wangz3/projects/ecole-gvs-method/third_party/LLaVA/checkpoints/llava_geo_new_mixture_v2/original_llava_7b_finetune_ori-33k_geo_l1-69k_v2_lora"
 bash scripts/eval_llava_geo/llavabench.sh $CUDA_ID $MODEL_PATH $MODEL_BASE $MODEL_NAME
+
+

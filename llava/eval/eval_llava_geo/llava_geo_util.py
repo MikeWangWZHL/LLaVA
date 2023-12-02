@@ -33,10 +33,10 @@ def load_llava_geo_model(args):
         conv_mode = "llava_v1"
     elif "mpt" in model_name.lower():
         conv_mode = "mpt"
-    else:
+    elif "llava_v0" in model_name.lower():
         conv_mode = "llava_v0"
-
-    print("conv_mode:", conv_mode)
+    else:
+        conv_mode = "llava_v1"
 
     if args.conv_mode is not None and conv_mode != args.conv_mode:
         print('[WARNING] the auto inferred conversation mode is {}, while `--conv-mode` is {}, using {}'.format(conv_mode, args.conv_mode, args.conv_mode))
@@ -46,5 +46,5 @@ def load_llava_geo_model(args):
     print("model base:", args.model_base)
     print("model path:", args.model_path)
     print("model name:", model_name)
-    print("conv_mode:", conv_mode)
+    print("conv_mode:", args.conv_mode)
     return tokenizer, model, image_processors, model_name

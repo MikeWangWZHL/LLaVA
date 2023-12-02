@@ -411,6 +411,8 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
 
         self.config.geo_projector_type = getattr(self.config, "geo_projector_type", "linear")
         self.config.img_feature_concat_order = getattr(self.config, "img_feature_concat_order", "semantic_first")
+        self.config.use_geo_image_features_only = getattr(self.config, "use_geo_image_features_only", False)
+
 
         self.load_geo_model_()
 
@@ -420,6 +422,7 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
 
         print("geo_projector_type:", self.config.geo_projector_type)
         print("img_feature_concat_order:", self.config.img_feature_concat_order)
+        print("use_geo_image_features_only:", self.config.use_geo_image_features_only)
 
 
     def load_geo_model_(self):
@@ -484,15 +487,16 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 position_ids = torch.sum(attention_mask, dim=1).unsqueeze(-1) - 1
             return input_ids, position_ids, attention_mask, past_key_values, None, labels, None
 
-        # clip encode
-        if type(images) is list or images.ndim == 5:
-            concat_images = torch.cat([image for image in images], dim=0)
-            image_features = self.encode_images(concat_images)
-            split_sizes = [image.shape[0] for image in images]
-            image_features = torch.split(image_features, split_sizes, dim=0)
-            image_features = [x.flatten(0, 1).to(self.device) for x in image_features]
-        else:
-            image_features = self.encode_images(images).to(self.device)
+        if not self.config.use_geo_image_features_only:
+            # clip encode
+            if type(images) is list or images.ndim == 5:
+                concat_images = torch.cat([image for image in images], dim=0)
+                clip_image_features = self.encode_images(concat_images)
+                split_sizes = [image.shape[0] for image in images]
+                clip_image_features = torch.split(clip_image_features, split_sizes, dim=0)
+                clip_image_features = [x.flatten(0, 1).to(self.device) for x in clip_image_features]
+            else:
+                clip_image_features = self.encode_images(images).to(self.device)
         
         # geo encode (e.g. SAM)
         if images_for_geo is not None:
@@ -504,14 +508,22 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 geo_image_features = [x.flatten(0, 1).to(self.device) for x in geo_image_features]
             else:
                 geo_image_features = self.encode_images_geo(images_for_geo).to(self.device)
-            # concat image features
-            if self.config.img_feature_concat_order == "semantic_first":
-                image_features = torch.cat([image_features, geo_image_features], dim=1)
-            elif self.config.img_feature_concat_order == "geometric_first":
-                image_features = torch.cat([geo_image_features, image_features], dim=1)
+
+        if self.config.use_geo_image_features_only:
+            assert images_for_geo is not None
+            image_features = geo_image_features
+        else:
+            if images_for_geo is not None:
+                # concat image features
+                if self.config.img_feature_concat_order == "semantic_first":
+                    image_features = torch.cat([clip_image_features, geo_image_features], dim=1)
+                elif self.config.img_feature_concat_order == "geometric_first":
+                    image_features = torch.cat([geo_image_features, clip_image_features], dim=1)
+                else:
+                    raise NotImplementedError(f"img_feature_concat_order: {self.config.img_feature_concat_order} is not implemented yet")
             else:
-                raise NotImplementedError(f"img_feature_concat_order: {self.config.img_feature_concat_order} is not implemented yet")
-            
+                image_features = clip_image_features
+
         # TODO: image start / end is not implemented here to support pretraining.
         if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
             raise NotImplementedError
@@ -702,9 +714,9 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 # if loss is nan
                 if torch.isnan(lm_loss):
                     print("lm loss:", lm_loss.item(), "shift_labels:", shift_labels, "shift_logits:", shift_logits)
-                    for l in shift_labels:
-                        print(l.item())
-                    # import pdb; pdb.set_trace()
+                    for l in labels:
+                        if (l == IGNORE_INDEX).all():
+                            print("ERROR: all label is IGNORE_INDEX | Nan loss")
                 else:
                     print("lm loss:", lm_loss.item())
 
