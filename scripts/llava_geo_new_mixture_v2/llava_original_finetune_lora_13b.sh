@@ -6,17 +6,18 @@ DEEPSPEED="zero2"
 
 SAVE_PER_STEPS=1000
 
-MODEL_PATH="liuhaotian/llava-v1.5-7b"
+MODEL_PATH="liuhaotian/llava-v1.5-13b"
 MODEL_TYPE="llava"
 BITS=16 # 16
-BATCH_SIZE=16 # 16
-GRAD_ACC_STEP=1 # 1
-OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/original_llava_7b_finetune_ori-33k_geo_l1-69k_v2_lora_Dec2
+BATCH_SIZE=8 # 16
+GRAD_ACC_STEP=2 # 1
+OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/original_llava_13b_finetune_ori-33k_geo_l1-69k_v2_lora
 DATA_PATH=${DATA_DIR}/llava_geo_mix_merged_v2_stage2_ori-33k_geo-l1-69k.json
 LR=1e-4
 
 # deepspeed --include localhost:4 llava/train/train_mem.py \
-deepspeed --include localhost:3,4,5,6 llava/train/train_mem.py \
+# deepspeed --include localhost:3,4,5,6 llava/train/train_mem.py \
+deepspeed --include localhost:0,4,5,6 llava/train/train_mem.py \
     --lora_enable True --lora_r 128 --lora_alpha 256 --mm_projector_lr 2e-5 \
     --deepspeed ${CODE_DIR}/scripts/${DEEPSPEED}.json \
     --model_name_or_path ${MODEL_PATH} \
@@ -56,12 +57,12 @@ deepspeed --include localhost:3,4,5,6 llava/train/train_mem.py \
 
 
 
-CUDA_ID=5
+# CUDA_ID=4
+# CODE_DIR="/data/wangz3/projects/ecole-gvs-method/third_party/LLaVA"
+# MODEL_BASE="liuhaotian/llava-v1.5-13b"
+# MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/original_llava_13b_finetune_ori-33k_geo_l1-69k_v2_lora
 
-MODEL_BASE="liuhaotian/llava-v1.5-7b"
-MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/original_llava_7b_finetune_ori-33k_geo_l1-69k_v2_lora_Dec2
+# MODEL_NAME="original_llava_13b_finetune_ori-33k_geo_l1-69k_v2_lora"
 
-MODEL_NAME="original_llava_7b_finetune_ori-33k_geo_l1-69k_v2_lora_Dec2"
-
-cd /data/wangz3/projects/ecole-gvs-method
-bash scripts/_run_eval_everything_lora.sh $CUDA_ID $MODEL_NAME $MODEL_BASE $MODEL_PATH
+# cd /data/wangz3/projects/ecole-gvs-method
+# bash scripts/_run_eval_everything_lora.sh $CUDA_ID $MODEL_NAME $MODEL_BASE $MODEL_PATH

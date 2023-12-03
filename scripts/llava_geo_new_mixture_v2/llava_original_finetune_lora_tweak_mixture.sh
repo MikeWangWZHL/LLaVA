@@ -4,16 +4,20 @@ DATA_DIR="/data/wangz3/projects/llava_data"
 GEO_DATA_DIR="/data/wangz3/projects/llava_data/geo-mix"
 DEEPSPEED="zero2"
 
-SAVE_PER_STEPS=1000
+#########################################
+#########################################
 
+SAVE_PER_STEPS=1000
 MODEL_PATH="liuhaotian/llava-v1.5-7b"
 MODEL_TYPE="llava"
 BITS=16 # 16
 BATCH_SIZE=16 # 16
 GRAD_ACC_STEP=1 # 1
-OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/original_llava_7b_finetune_ori-33k_geo_l1-69k_v2_lora_Dec2
-DATA_PATH=${DATA_DIR}/llava_geo_mix_merged_v2_stage2_ori-33k_geo-l1-69k.json
 LR=1e-4
+
+
+OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/original_llava_7b_finetune_ori-33k_geo_l1-69k_wo_sketch_v2_lora_Dec2
+DATA_PATH=${DATA_DIR}/llava_geo_mix_merged_v2_stage2_ori-33k_geo-l1-69k_wo_sketch.json
 
 # deepspeed --include localhost:4 llava/train/train_mem.py \
 deepspeed --include localhost:3,4,5,6 llava/train/train_mem.py \
@@ -53,15 +57,13 @@ deepspeed --include localhost:3,4,5,6 llava/train/train_mem.py \
     --model_type ${MODEL_TYPE}
 #############################################
 
-
-
-
-CUDA_ID=5
-
+CUDA_ID=4
 MODEL_BASE="liuhaotian/llava-v1.5-7b"
-MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/original_llava_7b_finetune_ori-33k_geo_l1-69k_v2_lora_Dec2
-
-MODEL_NAME="original_llava_7b_finetune_ori-33k_geo_l1-69k_v2_lora_Dec2"
+MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/original_llava_7b_finetune_ori-33k_geo_l1-69k_wo_sketch_v2_lora_Dec2
+MODEL_NAME="original_llava_7b_finetune_ori-33k_geo_l1-69k_wo_sketch_v2_lora_Dec2"
 
 cd /data/wangz3/projects/ecole-gvs-method
 bash scripts/_run_eval_everything_lora.sh $CUDA_ID $MODEL_NAME $MODEL_BASE $MODEL_PATH
+
+#############################################
+#############################################
