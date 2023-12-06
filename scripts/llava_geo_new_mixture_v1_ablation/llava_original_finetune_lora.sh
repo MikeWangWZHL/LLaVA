@@ -2,28 +2,25 @@
 CODE_DIR="/data/wangz3/projects/ecole-gvs-method/third_party/LLaVA"
 DATA_DIR="/data/wangz3/projects/llava_data"
 GEO_DATA_DIR="/data/wangz3/projects/llava_data/geo-mix"
+DEEPSPEED="zero2"
 
-SAVE_PER_STEPS=1000 # 24000
-LR=2e-4 # 2e-4
+SAVE_PER_STEPS=1000
 
 MODEL_PATH="liuhaotian/llava-v1.5-7b"
-
 MODEL_TYPE="llava"
-
 BITS=16 # 16
-BATCH_SIZE=16 # 16
-GRAD_ACC_STEP=1 # 1
+BATCH_SIZE=8 # 16
+GRAD_ACC_STEP=2 # 1
 
-OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture/original_llava_7b_finetune_ori_subset_and_geo_lora
+OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v1_ablation/original_llava_7b_finetune_ori-33k_geo_mix_v1_ablation_58k_all-89k_lora
+DATA_PATH=${DATA_DIR}//data/wangz3/projects/llava_data/geo_mix_v1_ablation_ori-33k-58k_all-89k.json
 
-# DATA_PATH=${DATA_DIR}/llava_v1_5_mix665k.json
-# DATA_PATH=${GEO_DATA_DIR}/geo_mix_v1_76k.json
-DATA_PATH=${DATA_DIR}/llava_geo_mix_merged_v1_ori-66k_geo-76k.json
+LR=1e-4
 
 # deepspeed --include localhost:4 llava/train/train_mem.py \
-deepspeed --include localhost:4,5,6,7 llava/train/train_mem.py \
+deepspeed --include localhost:3,4,5,6 llava/train/train_mem.py \
     --lora_enable True --lora_r 128 --lora_alpha 256 --mm_projector_lr 2e-5 \
-    --deepspeed ${CODE_DIR}/scripts/zero2.json \
+    --deepspeed ${CODE_DIR}/scripts/${DEEPSPEED}.json \
     --model_name_or_path ${MODEL_PATH} \
     --version v1 \
     --data_path ${DATA_PATH} \
@@ -56,6 +53,4 @@ deepspeed --include localhost:4,5,6,7 llava/train/train_mem.py \
     --lazy_preprocess True \
     --report_to wandb \
     --model_type ${MODEL_TYPE}
-    # --llava_geo_config_path "${CODE_DIR}/llava/train/llava_geo_configs/llava_geo_kd_stage2.json" \
-    # --tune_mm_mlp_adapter True \
-    # --tune_sam_adapter True
+#############################################

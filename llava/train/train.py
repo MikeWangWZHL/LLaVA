@@ -70,6 +70,8 @@ class ModelArguments:
     tune_vision_tower: bool = field(default=False)
     tune_llm: bool = field(default=False)
     use_geo_image_features_only: bool = field(default=False)
+    from_merged_lora_model: bool = field(default=False)
+    model_base: Optional[str] = field(default=None)
 
 
 @dataclass
@@ -866,29 +868,84 @@ def train():
                 **bnb_model_from_pretrained_args
             )
         elif 'llava_geo' in model_args.model_type:
-            model_cls = MODEL_TYPE_TO_MODEL_CLASS[model_args.model_type]
-            model_cfg = MODEL_TYPE_TO_CONFIG_CLASS[model_args.model_type]
-            
-            assert model_args.llava_geo_config_path is not None
-            if "7b" in model_args.model_name_or_path:
-                config = LlavaConfig.from_pretrained("liuhaotian/llava-v1.5-7b")
+
+            if model_args.from_merged_lora_model and model_args.model_base is not None:
+                from transformers import AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
+                model_path = model_args.model_name_or_path
+                model_base = model_args.model_base
+                model_cls = MODEL_TYPE_TO_MODEL_CLASS[model_args.model_type]
+
+                config = AutoConfig.from_pretrained(model_path)
+                # tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
+                print('Loading from a lora base model...')
+                
+                # adding llava geo config
+                assert model_args.llava_geo_config_path is not None
+                llava_geo_config_dict = json.load(open(model_args.llava_geo_config_path, 'r'))
+                config.update(llava_geo_config_dict)
+                config.use_geo_image_features_only = model_args.use_geo_image_features_only
+                config._name_or_path = model_args.model_name_or_path
+
+                model = model_cls.from_pretrained(
+                    model_base, 
+                    config=config, 
+                    cache_dir=training_args.cache_dir,
+                    **bnb_model_from_pretrained_args
+                )
+                
+                token_num, tokem_dim = model.lm_head.out_features, model.lm_head.in_features
+                if model.lm_head.weight.shape[0] != token_num:
+                    rank0_print("Resizing lm_head and embed_tokens...")
+                    model.lm_head.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
+                    model.model.embed_tokens.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
+
+                print('Loading additional LLaVA Geo weights...')
+                if os.path.exists(os.path.join(model_path, 'non_lora_trainables.bin')):
+                    non_lora_trainables = torch.load(os.path.join(model_path, 'non_lora_trainables.bin'), map_location='cpu')
+                else:
+                    from huggingface_hub import hf_hub_download
+                    def load_from_hf(repo_id, filename, subfolder=None):
+                        cache_file = hf_hub_download(
+                            repo_id=repo_id,
+                            filename=filename,
+                            subfolder=subfolder)
+                        return torch.load(cache_file, map_location='cpu')
+                    non_lora_trainables = load_from_hf(model_path, 'non_lora_trainables.bin')
+                non_lora_trainables = {(k[11:] if k.startswith('base_model.') else k): v for k, v in non_lora_trainables.items()}
+                if any(k.startswith('model.model.') for k in non_lora_trainables):
+                    non_lora_trainables = {(k[6:] if k.startswith('model.') else k): v for k, v in non_lora_trainables.items()}
+                ret = model.load_state_dict(non_lora_trainables, strict=False)
+                print("Try loading non_lora_trainables:", non_lora_trainables.keys())
+                print("Unexpected keys not loaded from non_lora_trainables:", ret.unexpected_keys)
+                from peft import PeftModel
+                print('Loading LoRA weights...')
+                model = PeftModel.from_pretrained(model, model_path)
+                print('Merging LoRA weights...')
+                model = model.merge_and_unload()
+                print('Merged Lora Model is loaded...')
             else:
-                config = LlavaConfig.from_pretrained("liuhaotian/llava-v1.5-13b")
-            llava_geo_config_dict = json.load(open(model_args.llava_geo_config_path, 'r'))
+                model_cls = MODEL_TYPE_TO_MODEL_CLASS[model_args.model_type]
+                model_cfg = MODEL_TYPE_TO_CONFIG_CLASS[model_args.model_type]
+                
+                if "7b" in model_args.model_name_or_path:
+                    config = LlavaConfig.from_pretrained("liuhaotian/llava-v1.5-7b")
+                else:
+                    config = LlavaConfig.from_pretrained("liuhaotian/llava-v1.5-13b")
+                assert model_args.llava_geo_config_path is not None
+                llava_geo_config_dict = json.load(open(model_args.llava_geo_config_path, 'r'))
 
-            config.update(llava_geo_config_dict)
-            config.use_geo_image_features_only = model_args.use_geo_image_features_only
-            config._name_or_path = model_args.model_name_or_path
+                config.update(llava_geo_config_dict)
+                config.use_geo_image_features_only = model_args.use_geo_image_features_only
+                config._name_or_path = model_args.model_name_or_path
 
-            rank0_print("Model class:", model_cls)
-            rank0_print("Model Config:", config)
-            model = model_cls.from_pretrained(
-                model_args.model_name_or_path,
-                config=config,
-                cache_dir=training_args.cache_dir,
-                **bnb_model_from_pretrained_args
-            )
-            model.load_geo_model_()
+                rank0_print("Model class:", model_cls)
+                rank0_print("Model Config:", config)
+                model = model_cls.from_pretrained(
+                    model_args.model_name_or_path,
+                    config=config,
+                    cache_dir=training_args.cache_dir,
+                    **bnb_model_from_pretrained_args
+                )
         else:
             model = LlavaLlamaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
@@ -948,8 +1005,11 @@ def train():
             padding_side="right"
         )
     else:
+        tokenizer_model_path = model_args.model_name_or_path
+        if model_args.model_base is not None:
+            tokenizer_model_path = model_args.model_base
         tokenizer = transformers.AutoTokenizer.from_pretrained(
-            model_args.model_name_or_path,
+            tokenizer_model_path,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
             padding_side="right",

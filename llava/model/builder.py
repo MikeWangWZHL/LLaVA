@@ -201,12 +201,12 @@ def load_pretrained_model_geo(model_path, model_base, model_name, load_8bit=Fals
             print('Loading LLaVA lora from base model...')
             
             model = model_cls.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, **kwargs)
-            # FIXME: hack fix for matching SAM encoder model params to the new version
-            from transformers.models.sam.modeling_sam import SamVisionEncoder
-            if hasattr(model, "geo_encoder") and isinstance(model.geo_encoder, SamVisionEncoder):
-                print("Reloading pretrained SAM encoder...")
-                model.load_geo_model_()
-                model.geo_encoder.to(device=model.device, dtype=torch.float16)
+            # # FIXME: hack fix for matching SAM encoder model params to the new version
+            # from transformers.models.sam.modeling_sam import SamVisionEncoder
+            # if hasattr(model, "geo_encoder") and isinstance(model.geo_encoder, SamVisionEncoder):
+            #     print("Reloading pretrained SAM encoder...")
+            #     model.load_geo_model_()
+            #     model.geo_encoder.to(device=model.device, dtype=torch.float16)
 
             token_num, tokem_dim = model.lm_head.out_features, model.lm_head.in_features
             if model.lm_head.weight.shape[0] != token_num:
