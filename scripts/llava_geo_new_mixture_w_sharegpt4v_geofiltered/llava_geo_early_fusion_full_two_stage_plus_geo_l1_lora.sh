@@ -7,7 +7,7 @@ GEO_CONFIG_JSON="${CODE_DIR}/llava/train/llava_geo_configs/llava_geo_earlyfusion
 
 ### job 1: llava geo early fusion: stage 1 from scratch: all stage1 + geo l1%
 # ### stage 1 ###
-SAVE_PER_STEPS=1000 # 24000
+SAVE_PER_STEPS=500 # 24000
 BITS=16 # 16
 BATCH_SIZE=8 # 16
 GRAD_ACC_STEP=4 # 1
@@ -66,7 +66,7 @@ deepspeed --include localhost:3,4,5,6 llava/train/train_mem.py \
 
 
 # ### job 2: llava geo early fusion: stage 2 from scratch: all stage2 + geo l1%
-SAVE_PER_STEPS=1000 # 1000
+SAVE_PER_STEPS=500 # 1000
 
 MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_w_sharegpt4v_geofiltered/llava_geo_early_fusion_7b_ori-558k_sharegpt4v-81k_geoprojonly_mlp_stage1
 OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_w_sharegpt4v_geofiltered/llava_geo_early_fusion_7b_ori-665k_sharegpt4v-81k_mlp_stage2_lora
@@ -138,7 +138,7 @@ python scripts/merge_lora_weights_geo.py \
 
 ### job 3: stage 3 with geo-l1 + ori 5%
 echo "second lora training..."
-SAVE_PER_STEPS=1000 # 1000
+SAVE_PER_STEPS=500 # 1000
 
 MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_w_sharegpt4v_geofiltered/llava_geo_early_fusion_7b_ori-665k_sharegpt4v-81k_mlp_stage2_lora_merged
 OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_w_sharegpt4v_geofiltered/llava_geo_early_fusion_7b_ori-665k_33k_l1-69k_sharegpt4v-81k_40k_mlp_stage3_lora

@@ -13,7 +13,7 @@ BATCH_SIZE=8 # 16
 GRAD_ACC_STEP=2 # 1
 
 OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v1_ablation/original_llava_7b_finetune_ori-33k_geo_mix_v1_ablation_58k_all-89k_lora
-DATA_PATH=${DATA_DIR}//data/wangz3/projects/llava_data/geo_mix_v1_ablation_ori-33k-58k_all-89k.json
+DATA_PATH=${DATA_DIR}/geo_mix_v1_ablation_ori-33k-58k_all-89k.json
 
 LR=1e-4
 
@@ -54,3 +54,12 @@ deepspeed --include localhost:3,4,5,6 llava/train/train_mem.py \
     --report_to wandb \
     --model_type ${MODEL_TYPE}
 #############################################
+
+
+# ablation eval
+CUDA_ID=6
+MODEL_BASE="liuhaotian/llava-v1.5-7b"
+MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v1_ablation/original_llava_7b_finetune_ori-33k_geo_mix_v1_ablation_58k_all-89k_lora
+MODEL_NAME="original_llava_7b_finetune_ori-33k_geo_mix_v1_ablation_58k_all-89k_lora"
+cd /data/wangz3/projects/ecole-gvs-method
+bash scripts/_run_eval_everything_lora.sh $CUDA_ID $MODEL_NAME $MODEL_BASE $MODEL_PATH
