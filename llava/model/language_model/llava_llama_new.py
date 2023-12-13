@@ -375,11 +375,11 @@ class LlavaGeoConfigEarlyFusion(LlavaConfig):
     }
     losses = [
         "lm", 
-        # "sam"
+        # "kd"
     ]
     loss_weights = {
         "lm": 1.0,
-        # "sam": 1.0
+        # "kd": 1.0
     }
     geo_projector_type = "linear" # mlp
     img_feature_concat_order = "semantic_first" # "geometric_first"
@@ -455,6 +455,13 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
         else:
             raise NotImplementedError(f"geo_projector_type: {self.config.geo_projector_type} is not implemented yet")
 
+        if "kd" in self.config.losses:
+            self.llm_to_geo_projector = nn.Linear(
+               self.config.hidden_size, in_dim # 4096 => 4096
+            )
+            cos_kd_loss_temp = getattr(self.config, 'cos_kd_loss_temp', 1.0)
+            self.kd_loss_fn = CosineSimilarityDistillationLoss(dim=2, temperature=cos_kd_loss_temp)
+
         # specify image size and patch size
         for key in sam_args:
             if key not in ['base_config']:
@@ -484,7 +491,10 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                     device=attention_mask.device
                 )), dim=1)
                 position_ids = torch.sum(attention_mask, dim=1).unsqueeze(-1) - 1
-            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None
+            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None, None, None, None
+
+        clip_features = None
+        geo_features = None
 
         if not self.config.use_geo_image_features_only:
             # clip encode
@@ -496,6 +506,8 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 clip_image_features = [x.flatten(0, 1).to(self.device) for x in clip_image_features]
             else:
                 clip_image_features = self.encode_images(images).to(self.device)
+            clip_features = clip_image_features
+            
         
         # geo encode (e.g. SAM)
         if images_for_geo is not None:
@@ -507,6 +519,7 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 geo_image_features = [x.flatten(0, 1).to(self.device) for x in geo_image_features]
             else:
                 geo_image_features = self.encode_images_geo(images_for_geo).to(self.device)
+            geo_features = geo_image_features
 
         if self.config.use_geo_image_features_only:
             assert images_for_geo is not None
@@ -520,6 +533,8 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                     image_features = torch.cat([geo_image_features, clip_image_features], dim=1)
                 else:
                     raise NotImplementedError(f"img_feature_concat_order: {self.config.img_feature_concat_order} is not implemented yet")
+                geo_image_features_len = geo_image_features.shape[1]
+                clip_image_features_len = clip_image_features.shape[1]
             else:
                 image_features = clip_image_features
 
@@ -550,6 +565,9 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
         new_input_embeds = []
         new_labels = []
         cur_image_idx = 0
+
+        image_start_end_indices = []
+
         for batch_idx, cur_input_ids in enumerate(input_ids):
             num_images = (cur_input_ids == IMAGE_TOKEN_INDEX).sum()
             if num_images == 0:
@@ -559,6 +577,7 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 new_input_embeds.append(cur_input_embeds)
                 new_labels.append(labels[batch_idx])
                 cur_image_idx += 1
+                image_start_end_indices.append([])
                 continue
 
             image_token_indices = [-1] + torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0].tolist() + [cur_input_ids.shape[0]]
@@ -574,12 +593,19 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
             cur_new_input_embeds = []
             cur_new_labels = []
 
+            cur_image_start_end_indices = []
             for i in range(num_images + 1):
                 cur_new_input_embeds.append(cur_input_embeds_no_im[i])
                 cur_new_labels.append(cur_labels_noim[i])
                 if i < num_images:
                     cur_image_features = image_features[cur_image_idx]
                     cur_image_idx += 1
+
+                    # keep track of image token indices
+                    im_start_idx = sum([len(seg) for seg in cur_new_input_embeds])
+                    im_end_idx = im_start_idx + cur_image_features.shape[0]
+                    cur_image_start_end_indices.append([im_start_idx, im_end_idx])
+
                     cur_new_input_embeds.append(cur_image_features)
                     cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
 
@@ -588,6 +614,8 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
 
             new_input_embeds.append(cur_new_input_embeds)
             new_labels.append(cur_new_labels)
+
+            image_start_end_indices.append(cur_image_start_end_indices)
 
         # Truncate sequences to max length as image embeddings can make the sequence longer
         tokenizer_model_max_length = getattr(self.config, 'tokenizer_model_max_length', None)
@@ -600,6 +628,7 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
         batch_size = len(new_input_embeds)
 
         new_input_embeds_padded = []
+        new_image_start_end_indices_padded = []
         new_labels_padded = torch.full((batch_size, max_len), IGNORE_INDEX, dtype=new_labels[0].dtype, device=new_labels[0].device)
         attention_mask = torch.zeros((batch_size, max_len), dtype=attention_mask.dtype, device=attention_mask.device)
         position_ids = torch.zeros((batch_size, max_len), dtype=position_ids.dtype, device=position_ids.device)
@@ -615,6 +644,14 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                     new_labels_padded[i, -cur_len:] = cur_new_labels
                     attention_mask[i, -cur_len:] = True
                     position_ids[i, -cur_len:] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
+                
+                if image_start_end_indices[i] == []:
+                    new_image_start_end_indices_padded.append([])
+                else:
+                    # pad left
+                    for l,r in image_start_end_indices[i]:
+                        new_image_start_end_indices_padded.append([l+max_len-cur_len, r+max_len-cur_len])
+            
             else:
                 new_input_embeds_padded.append(torch.cat((
                     cur_new_embed,
@@ -624,7 +661,8 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                     new_labels_padded[i, :cur_len] = cur_new_labels
                     attention_mask[i, :cur_len] = True
                     position_ids[i, :cur_len] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
-
+                # no need to pad image_start_end_indices if padding is on the right
+                new_image_start_end_indices_padded.append(image_start_end_indices[i])
 
         new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
 
@@ -645,8 +683,56 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
         #     for label in new_labels:
         #         if (label == IGNORE_INDEX).all():
         #             print("ERROR: all label is IGNORE_INDEX, something is wrong")
+        
+        assert len(new_image_start_end_indices_padded) == batch_size
+        # get start end indices for clip embeddings and geo embeddings
+        new_image_start_end_indices_padded_clip = []
+        new_image_start_end_indices_padded_geo = []
+        if self.config.use_geo_image_features_only:
+            new_image_start_end_indices_padded_geo = new_image_start_end_indices_padded
+        else:
+            if images_for_geo is not None:
+                for instance in new_image_start_end_indices_padded:
+                    clip_instance = []
+                    geo_instance = []
+                    for l, r in instance:
+                        if self.config.img_feature_concat_order == "semantic_first":
+                            clip_instance.append([l, l+clip_image_features_len])
+                            geo_instance.append([l+clip_image_features_len, r])
+                        elif self.config.img_feature_concat_order == "geometric_first":
+                            geo_instance.append([l, l+geo_image_features_len])
+                            clip_instance.append([l+geo_image_features_len, r])
+                        assert len(clip_instance[-1]) == clip_image_features_len
+                        assert len(geo_instance[-1]) == geo_image_features_len
+                    new_image_start_end_indices_padded_clip.append(clip_instance)
+                    new_image_start_end_indices_padded_geo.append(geo_instance)
+            else:
+                new_image_start_end_indices_padded_clip = new_image_start_end_indices_padded
+            geo_image_features_len = geo_image_features.shape[1]
+            clip_image_features_len = clip_image_features.shape[1]
+        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, clip_features, geo_features, new_image_start_end_indices_padded_clip, new_image_start_end_indices_padded_geo
 
-        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, image_features
+    def get_kd_teacher(self, geo_features):
+        return geo_features
+
+    def get_kd_student(self, llm_hidden_states, geo_emb_start_end_indices):
+        students = []
+        has_image_indices = []
+        for i, cur_hidden_states in enumerate(llm_hidden_states):
+            cur_image_start_end_indices = geo_emb_start_end_indices[i]
+            if cur_image_start_end_indices == []:
+                continue
+            else:
+                assert len(cur_image_start_end_indices) == 1
+                l, r = cur_image_start_end_indices[0]
+                cur_student = cur_hidden_states[l:r]
+                cur_student = self.llm_to_geo_projector(cur_student)
+                students.append(cur_student)
+                has_image_indices.append(i)
+        student = torch.stack(students, dim=0) # (batch_size, num_patches, geo_hidden_size)
+        # # max pooling
+        # student = torch.max(student, dim=1)[0]
+        return student, has_image_indices
 
     def forward(
         self,
@@ -669,7 +755,7 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels, image_features \
+        input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels, clip_features, geo_features, clip_emb_start_end_indices, geo_emb_start_end_indices \
             = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, images_for_geo)
         
         # import pdb; pdb.set_trace()
@@ -722,8 +808,19 @@ class LlavaGeoLlamaForCausalLMEarlyFusion(LlamaForCausalLM, LlavaGeoMetaForCausa
                 # import wandb; wandb.log({"lm_loss":lm_loss.item()})
                 losses['lm'] = lm_loss
             
-            if "sam" in self.config.losses:
-                raise NotImplementedError("SAM loss is not implemented yet")
+            if "kd" in self.config.losses:
+                teacher = self.get_kd_teacher(geo_features) # batch_size, geo_emb_seq_len, geo_hidden_size
+                student, has_image_indice = self.get_kd_student(hidden_states, geo_emb_start_end_indices) # batch_size, geo_emb_seq_len, geo_hidden_size
+
+                # filter out instances without image
+                teacher = teacher[has_image_indice]
+                assert teacher.shape == student.shape
+
+                kd_loss = self.kd_loss_fn(student, teacher) # compute cosine similarity loss on every tokens
+
+                print("kd loss (reweighted) | weighting factor:", kd_loss.item() * self.config.loss_weights['kd'], self.config.loss_weights['kd'])
+                losses['kd'] = kd_loss
+                reconstruction_loss = kd_loss
 
             for key in losses:
                 if loss is None:
@@ -785,11 +882,11 @@ class CosineSimilarityDistillationLoss(nn.Module):
     # distillation_loss = distillation_loss_fn(student_logits, teacher_logits)
     # print(distillation_loss)
 
-    def __init__(self, temperature=1.0):
+    def __init__(self, dim=1, temperature=1.0):
 
         super(CosineSimilarityDistillationLoss, self).__init__()
         self.temperature = temperature
-        self.cosine_similarity = nn.CosineSimilarity(dim=1)
+        self.cosine_similarity = nn.CosineSimilarity(dim=dim)
     
     def forward(self, student_logits, teacher_logits):
         # # Normalize teacher and student logits
