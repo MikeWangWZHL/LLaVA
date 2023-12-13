@@ -4,22 +4,22 @@ DATA_DIR="/data/wangz3/projects/llava_data"
 GEO_DATA_DIR="/data/wangz3/projects/llava_data/geo-mix"
 DEEPSPEED="zero2"
 
-GEO_CONFIG_JSON="${CODE_DIR}/llava/train/llava_geo_configs/llava_geo_earlyfusion_mlp_semanticfirst.json"
+GEO_CONFIG_JSON="${CODE_DIR}/llava/train/llava_geo_configs/llava_geo_earlyfusion_kd.json"
 
 ### job 1: llava geo early fusion: stage 1 from scratch: all stage1 + geo l1%
 # ### stage 1 ###
 SAVE_PER_STEPS=1000 # 24000
 BITS=16 # 16
 BATCH_SIZE=16 # 16
-GRAD_ACC_STEP=2 # 1
+GRAD_ACC_STEP=1 # 1
 
 MODEL_PATH="lmsys/vicuna-7b-v1.5"
 PRETRAINED_PROJECTOR_PATH="./checkpoints/projectors/llava-v1.5-mlp2x-336px-pretrain-vicuna-7b-v1.5/mm_projector.bin"
 
-MODEL_TYPE="llava_geo_early_fusion"
+MODEL_TYPE="llava_geo_early_fusion_kd"
 LR=1e-4 # 2e-4
 
-OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-558k_geoprojonly_mlp_stage1_v2
+OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2_llavageo-sam-kd/llava_geo_early_fusion_kd_7b_ori-558k_geoprojonly_linear_stage1_v2
 
 DATA_PATH=${DATA_DIR}/llava_geo_mix_merged_v2_stage1_ori-558k_geo-l1-69k.json
 
@@ -69,16 +69,16 @@ deepspeed --include localhost:3,4,5,6 llava/train/train_mem.py \
 # ### job 2: llava geo early fusion: stage 2 from scratch: all stage2 + geo l1%
 SAVE_PER_STEPS=1000 # 1000
 
-MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-558k_geoprojonly_mlp_stage1_v2
-OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-665k_geo-l1_mlp_stage2_v2_lora
+MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2_llavageo-sam-kd/llava_geo_early_fusion_kd_7b_ori-558k_geoprojonly_linear_stage1_v2
+OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2_llavageo-sam-kd/llava_geo_early_fusion_kd_7b_ori-665k_geo-l1_linear_stage2_v2_lora
 
-MODEL_TYPE="llava_geo_early_fusion"
+MODEL_TYPE="llava_geo_early_fusion_kd"
 LR=1e-4
 PROJ_LR=2e-5
 
 BITS=16 # 16
-BATCH_SIZE=16 # 16
-GRAD_ACC_STEP=1 # 1
+BATCH_SIZE=8 # 16
+GRAD_ACC_STEP=2 # 1
 
 DATA_PATH=${DATA_DIR}/llava_geo_mix_merged_v2_stage2_ori-665k_geo-l1-69k.json
 
@@ -124,10 +124,10 @@ deepspeed --include localhost:3,4,5,6 llava/train/train_mem.py \
 
 ### merge the lora model above
 echo "merge the lora model above..."
-MODEL_BASE=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-558k_geoprojonly_mlp_stage1_v2
-MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-665k_geo-l1_mlp_stage2_v2_lora
-MODEL_NAME=llava_geo_early_fusion_7b_ori-665k_geo-l1_mlp_stage2_v2_lora
-OUTPUT_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-665k_geo-l1_mlp_stage2_v2_lora_merged
+MODEL_BASE=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2_llavageo-sam-kd/llava_geo_early_fusion_kd_7b_ori-558k_geoprojonly_linear_stage1_v2
+MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2_llavageo-sam-kd/llava_geo_early_fusion_kd_7b_ori-665k_geo-l1_linear_stage2_v2_lora
+MODEL_NAME=llava_geo_early_fusion_kd_7b_ori-665k_geo-l1_linear_stage2_v2_lora
+OUTPUT_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2_llavageo-sam-kd/llava_geo_early_fusion_kd_7b_ori-665k_geo-l1_linear_stage2_v2_lora_merged
 
 python scripts/merge_lora_weights_geo.py \
     --model-path ${MODEL_PATH} \
@@ -140,18 +140,18 @@ python scripts/merge_lora_weights_geo.py \
 echo "second lora training..."
 SAVE_PER_STEPS=1000 # 1000
 
-MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-665k_geo-l1_mlp_stage2_v2_lora_merged
-OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2/llava_geo_early_fusion_7b_ori-665k_geo-l1_lora_merged_ori-33k_l1_mlp_stage3_v2_lora
+MODEL_PATH=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2_llavageo-sam-kd/llava_geo_early_fusion_kd_7b_ori-665k_geo-l1_linear_stage2_v2_lora_merged
+OUTPUT_DIR=${CODE_DIR}/checkpoints/llava_geo_new_mixture_v2_llavageo-sam-kd/llava_geo_early_fusion_kd_7b_ori-665k_geo-l1_lora_merged_ori-33k_l1_linear_stage3_v2_lora
 
 DATA_PATH=${DATA_DIR}/llava_geo_mix_merged_v2_stage2_ori-33k_geo-l1-69k.json
 
-MODEL_TYPE="llava_geo_early_fusion"
+MODEL_TYPE="llava_geo_early_fusion_kd"
 LR=1e-4
 PROJ_LR=2e-5
 
 BITS=16 # 16
-BATCH_SIZE=16 # 16
-GRAD_ACC_STEP=1 # 1
+BATCH_SIZE=8 # 16
+GRAD_ACC_STEP=2 # 1
 
 deepspeed --include localhost:3,4,5,6 llava/train/train_mem.py \
     --lora_enable True --lora_r 128 --lora_alpha 256 --mm_projector_lr ${PROJ_LR} \
