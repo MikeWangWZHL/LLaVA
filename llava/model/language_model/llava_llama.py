@@ -1063,14 +1063,13 @@ class LlavaGeoLlamaForCausalLMEarlyFusionKD(LlamaForCausalLM, LlavaGeoMetaForCau
                         elif self.config.img_feature_concat_order == "geometric_first":
                             geo_instance.append([l, l+geo_image_features_len])
                             clip_instance.append([l+geo_image_features_len, r])
-                        assert len(clip_instance[-1]) == clip_image_features_len
-                        assert len(geo_instance[-1]) == geo_image_features_len
+
+                        assert clip_instance[-1][1] - clip_instance[-1][0] == clip_image_features_len
+                        assert geo_instance[-1][1] - geo_instance[-1][0] == geo_image_features_len
                     new_image_start_end_indices_padded_clip.append(clip_instance)
                     new_image_start_end_indices_padded_geo.append(geo_instance)
             else:
                 new_image_start_end_indices_padded_clip = new_image_start_end_indices_padded
-            geo_image_features_len = geo_image_features.shape[1]
-            clip_image_features_len = clip_image_features.shape[1]
         
         # import pdb; pdb.set_trace()
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, clip_features, geo_features, new_image_start_end_indices_padded_clip, new_image_start_end_indices_padded_geo

@@ -159,7 +159,9 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
 def get_model_type_from_model_name(model_name):
     if "geo_mae" in model_name.lower():
         return "llava_geo_mae"
-    elif "geo_early_fusion" in model_name.lower():
+    elif "geo_early_fusion_kd" in model_name.lower():
+        return "llava_geo_early_fusion_kd"
+    elif "geo_early_fusion" in model_name.lower() and 'kd' not in model_name.lower():
         return "llava_geo_early_fusion"
     elif "geo_kd" in model_name.lower():
         return "llava_geo_kd"
