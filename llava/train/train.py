@@ -683,10 +683,11 @@ class LazySupervisedDataset(Dataset):
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         sources = self.list_data_dict[i]
+
         if isinstance(i, int):
             sources = [sources]
         assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
-        if 'image' in sources[0]:
+        if 'image' in sources[0] and sources[0]['image'] != "":
             image_file = self.list_data_dict[i]['image']
             image_folder = self.data_args.image_folder
             processor = self.data_args.image_processor
@@ -743,16 +744,18 @@ class LazySupervisedDataset(Dataset):
                 self.data_args)
         else:
             sources = copy.deepcopy([e["conversations"] for e in sources])
+        
         data_dict = preprocess(
             sources,
             self.tokenizer,
-            has_image=('image' in self.list_data_dict[i]))
+            has_image=('image' in self.list_data_dict[i] and self.list_data_dict[i]['image'] != ""))
+        
         if isinstance(i, int):
             data_dict = dict(input_ids=data_dict["input_ids"][0],
                              labels=data_dict["labels"][0])
 
         # image exist in the data
-        if 'image' in self.list_data_dict[i]:
+        if 'image' in self.list_data_dict[i] and self.list_data_dict[i]['image'] != "":
             data_dict['images'] = image
             if geo_image is not None:
                 data_dict['geo_images'] = geo_image
@@ -868,7 +871,6 @@ def train():
                 **bnb_model_from_pretrained_args
             )
         elif 'llava_geo' in model_args.model_type:
-
             if model_args.from_merged_lora_model and model_args.model_base is not None:
                 from transformers import AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
                 model_path = model_args.model_name_or_path
@@ -953,6 +955,7 @@ def train():
                 **bnb_model_from_pretrained_args
             )
     else:
+        rank0_print("Loading text only model:", model_args.model_name_or_path)
         model = transformers.LlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
@@ -1053,7 +1056,6 @@ def train():
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
         model.config.tokenizer_padding_side = tokenizer.padding_side
         model.config.tokenizer_model_max_length = tokenizer.model_max_length
-
 
 
         if not training_args.lora_enable:
@@ -1164,8 +1166,7 @@ def train():
 
 
     rank0_print("\n\nTraining arguments:", training_args)
-    
-    # import pdb; pdb.set_trace()
+
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,
