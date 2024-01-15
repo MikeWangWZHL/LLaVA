@@ -6,31 +6,23 @@ DEEPSPEED="zero2"
 SAVE_PER_STEPS=500
 
 MODEL_PATH="lmsys/vicuna-7b-v1.5"
-MODEL_TYPE="llava"
 BATCH_SIZE=8 # 16
 GRAD_ACC_STEP=2 # 1
 
-
-for TASK_NAME in "line_or_angle" "single_angle" "lines" "intersect_horizontal" "clevr_easy"
+# Task 1
+for TASK_NAME in "clevr_easy_gt_scene"
 do
     echo "run task: ${TASK_NAME}"
-    DATA_PATH=${DATA_DIR}/svg_probing/${TASK_NAME}/train_image.json
-    OUTPUT_DIR=${CODE_DIR}/checkpoints/svg_probing/image_text_lora/${TASK_NAME}_projector_from_scratch
-    # mm_projector_path=${CODE_DIR}/checkpoints/projectors/llava-v1.5-mlp2x-336px-pretrain-vicuna-7b-v1.5/mm_projector.bin
+    DATA_PATH=${DATA_DIR}/svg_probing/${TASK_NAME}/train_scene.json
+    OUTPUT_DIR=${CODE_DIR}/checkpoints/svg_probing/scene_text_lora/${TASK_NAME}
     LR=2e-5
-    deepspeed --include localhost:2,7 --master_port 29503  llava/train/train_mem.py \
+    deepspeed --include localhost:2,3 llava/train/train_mem.py \
         --lora_enable True --lora_r 128 --lora_alpha 256 \
         --deepspeed ${CODE_DIR}/scripts/${DEEPSPEED}.json \
         --model_name_or_path ${MODEL_PATH} \
         --version v1 \
         --data_path ${DATA_PATH} \
         --image_folder ${DATA_DIR} \
-        --vision_tower openai/clip-vit-large-patch14-336 \
-        --mm_projector_type mlp2x_gelu \
-        --mm_vision_select_layer -2 \
-        --mm_use_im_start_end False \
-        --mm_use_im_patch_token False \
-        --image_aspect_ratio pad \
         --bf16 True \
         --output_dir ${OUTPUT_DIR} \
         --num_train_epochs 1 \
@@ -51,7 +43,11 @@ do
         --gradient_checkpointing True \
         --dataloader_num_workers 4 \
         --lazy_preprocess True \
-        --report_to wandb \
-        --model_type ${MODEL_TYPE}
-        # --group_by_modality_length True \
+        --report_to wandb
+    # --group_by_modality_length True \
 done
+#############################################
+
+## Eval
+cd /data/wangz3/projects/ecole-gvs-method
+bash scripts/svg_probing_eval/_run_jobs_scene_text.sh

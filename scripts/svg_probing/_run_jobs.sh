@@ -1,0 +1,3 @@
+bash scripts/svg_probing/svg_text_lora.sh
+bash scripts/svg_probing/image_text_lora_from_llava_stage1.sh
+bash scripts/svg_probing/image_text_lora_from_llava_stage2.sh
