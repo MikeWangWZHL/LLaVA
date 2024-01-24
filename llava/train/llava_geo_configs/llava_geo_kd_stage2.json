@@ -1,0 +1,11 @@
+{
+    "model_type": "llava_geo_kd",
+    "sam_config":{
+        "base_config": "facebook/sam-vit-base"
+    },
+    "losses": ["lm", "kd"],
+    "loss_weights": {
+        "lm": 1.0,
+        "kd": 10.0
+    }
+}

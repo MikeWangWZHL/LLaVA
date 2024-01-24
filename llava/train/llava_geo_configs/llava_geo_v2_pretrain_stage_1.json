@@ -1,0 +1,11 @@
+{
+    "mae_config":{
+        "base_config": "facebook/vit-mae-base",
+        "norm_pix_loss": true
+    },
+    "losses": ["mae"],
+    "loss_weights": {
+        "mae": 1.0
+    },
+    "do_reconstruction_only": true
+}

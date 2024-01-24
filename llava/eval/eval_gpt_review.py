@@ -6,6 +6,8 @@ import openai
 import tqdm
 import ray
 import time
+from openai import OpenAI
+import time
 
 NUM_SECONDS_TO_SLEEP = 3
 
@@ -13,8 +15,9 @@ NUM_SECONDS_TO_SLEEP = 3
 def get_eval(content: str, max_tokens: int):
     while True:
         try:
-            response = openai.ChatCompletion.create(
-                model='gpt-4',
+            client = OpenAI()
+            response = client.chat.completions.create(
+                model='gpt-4-1106-preview',
                 messages=[{
                     'role': 'system',
                     'content': 'You are a helpful and precise assistant for checking the quality of the answer.'
@@ -25,14 +28,12 @@ def get_eval(content: str, max_tokens: int):
                 temperature=0.2,  # TODO: figure out which temperature is best for evaluation
                 max_tokens=max_tokens,
             )
+            response = response.dict()
             break
-        except openai.error.RateLimitError:
-            pass
         except Exception as e:
             print(e)
-        time.sleep(NUM_SECONDS_TO_SLEEP)
+        time.sleep(NUM_SECONDS_TO_SLEEP * 10)
 
-    print('success!')
     return response['choices'][0]['message']['content']
 
 

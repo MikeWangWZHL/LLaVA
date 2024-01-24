@@ -1,0 +1,12 @@
+{
+    "model_type": "llava_geo_early_fusion",
+    "sam_config":{
+        "base_config": "facebook/sam-vit-base"
+    },
+    "losses": ["lm"],
+    "loss_weights": {
+        "lm": 1.0
+    },
+    "geo_projector_type": "linear",
+    "img_feature_concat_order": "geometric_first"
+}

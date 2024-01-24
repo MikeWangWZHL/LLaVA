@@ -36,9 +36,13 @@ from llava.mm_utils import tokenizer_image_token
 
 from PIL import Image
 
+from transformers import AutoImageProcessor, ViTMAEForPreTraining
+from transformers import SamProcessor, SamModel
+
+from llava.model_classes import MODEL_TYPE_TO_MODEL_CLASS, MODEL_TYPE_TO_CONFIG_CLASS
+
 
 local_rank = None
-
 
 def rank0_print(*args):
     if local_rank == 0:
@@ -58,6 +62,16 @@ class ModelArguments:
     mm_use_im_start_end: bool = field(default=False)
     mm_use_im_patch_token: bool = field(default=True)
     mm_vision_select_feature: Optional[str] = field(default="patch")
+    # added for llava_geo
+    model_type: Optional[str] = field(default="llava")
+    llava_geo_config_path: Optional[str] = field(default=None)
+    tune_mae_adapter: bool = field(default=False)
+    tune_sam_adapter: bool = field(default=False)
+    tune_vision_tower: bool = field(default=False)
+    tune_llm: bool = field(default=False)
+    use_geo_image_features_only: bool = field(default=False)
+    from_merged_lora_model: bool = field(default=False)
+    model_base: Optional[str] = field(default=None)
 
 
 @dataclass
@@ -104,6 +118,7 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_bias: str = "none"
     mm_projector_lr: Optional[float] = None
     group_by_modality_length: bool = field(default=False)
+    geo_image_processor: Optional[AutoImageProcessor] = field(default=None) 
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -163,9 +178,15 @@ def get_mm_adapter_state_maybe_zero_3(named_params, keys_to_match):
 def find_all_linear_names(model):
     cls = torch.nn.Linear
     lora_module_names = set()
-    multimodal_keywords = ['mm_projector', 'vision_tower', 'vision_resampler']
+    ignore_keywords = [
+        'mm_projector', 
+        'vision_tower', 
+        'vision_resampler'
+        'mae_',
+        'geo_'
+    ]
     for name, module in model.named_modules():
-        if any(mm_keyword in name for mm_keyword in multimodal_keywords):
+        if any(mm_keyword in name for mm_keyword in ignore_keywords):
             continue
         if isinstance(module, cls):
             names = name.split('.')
@@ -180,26 +201,27 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                                    output_dir: str):
     """Collects the state dict and dump to disk."""
 
-    if getattr(trainer.args, "tune_mm_mlp_adapter", False):
-        # Only save Adapter
-        keys_to_match = ['mm_projector']
-        if getattr(trainer.args, "use_im_start_end", False):
-            keys_to_match.extend(['embed_tokens', 'embed_in'])
+    # if getattr(trainer.args, "tune_mm_mlp_adapter", False) is True:
+    #     # Only save Adapter
+    #     keys_to_match = ['mm_projector']
+    #     if getattr(trainer.args, "use_im_start_end", False):
+    #         keys_to_match.extend(['embed_tokens', 'embed_in'])
 
-        weight_to_save = get_mm_adapter_state_maybe_zero_3(trainer.model.named_parameters(), keys_to_match)
-        trainer.model.config.save_pretrained(output_dir)
+    #     weight_to_save = get_mm_adapter_state_maybe_zero_3(trainer.model.named_parameters(), keys_to_match)
+    #     trainer.model.config.save_pretrained(output_dir)
 
-        current_folder = output_dir.split('/')[-1]
-        parent_folder = os.path.dirname(output_dir)
-        if trainer.args.local_rank == 0 or trainer.args.local_rank == -1:
-            if current_folder.startswith('checkpoint-'):
-                mm_projector_folder = os.path.join(parent_folder, "mm_projector")
-                os.makedirs(mm_projector_folder, exist_ok=True)
-                torch.save(weight_to_save, os.path.join(mm_projector_folder, f'{current_folder}.bin'))
-            else:
-                torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
-        return
+    #     current_folder = output_dir.split('/')[-1]
+    #     parent_folder = os.path.dirname(output_dir)
+    #     if trainer.args.local_rank == 0 or trainer.args.local_rank == -1:
+    #         if current_folder.startswith('checkpoint-'):
+    #             mm_projector_folder = os.path.join(parent_folder, "mm_projector")
+    #             os.makedirs(mm_projector_folder, exist_ok=True)
+    #             torch.save(weight_to_save, os.path.join(mm_projector_folder, f'{current_folder}.bin'))
+    #         else:
+    #             torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
+    #     return
 
+    ## always save the entire model
     if trainer.deepspeed:
         torch.cuda.synchronize()
         trainer.save_model(output_dir)
@@ -480,7 +502,6 @@ def preprocess_v1(
                     f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
                     f" (ignored)"
                 )
-
     return dict(
         input_ids=input_ids,
         labels=targets,
@@ -623,6 +644,9 @@ def preprocess(
     return dict(input_ids=input_ids, labels=targets)
 
 
+import random
+random.seed(0)
+
 class LazySupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
@@ -653,20 +677,40 @@ class LazySupervisedDataset(Dataset):
         length_list = []
         for sample in self.list_data_dict:
             cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
-            cur_len = cur_len if 'images' in sample else -cur_len
+            cur_len = cur_len if 'image' in sample else -cur_len
             length_list.append(cur_len)
         return length_list
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         sources = self.list_data_dict[i]
+
         if isinstance(i, int):
             sources = [sources]
         assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
-        if 'image' in sources[0]:
+        if 'image' in sources[0] and sources[0]['image'] != "":
             image_file = self.list_data_dict[i]['image']
             image_folder = self.data_args.image_folder
             processor = self.data_args.image_processor
-            image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+            geo_processor = self.data_args.geo_image_processor
+
+            # handle image not exist
+            image_path = os.path.join(image_folder, image_file)
+            if not os.path.exists(image_path):
+                # get another random instance
+                idx = random.randint(0, len(self.list_data_dict)-1)
+                logging.warning(f"Image {image_path} does not exist, get another random instance {idx}")
+                return self.__getitem__(idx)
+            # handle image not loaded
+            try:
+                image = Image.open(image_path).convert('RGB')
+            except Exception as e:
+                idx = random.randint(0, len(self.list_data_dict)-1)
+                logging.warning(f"Image {image_path} cannot be opened, get another random instance {idx}")
+                return self.__getitem__(idx)
+
+            geo_image = None
+            # make a deep copy of the original image
+            original_image = copy.deepcopy(image)
             if self.data_args.image_aspect_ratio == 'pad':
                 def expand2square(pil_img, background_color):
                     width, height = pil_img.size
@@ -680,30 +724,59 @@ class LazySupervisedDataset(Dataset):
                         result = Image.new(pil_img.mode, (height, height), background_color)
                         result.paste(pil_img, ((height - width) // 2, 0))
                         return result
-                image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                image_pil = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
+                image = processor.preprocess(image_pil, return_tensors='pt')['pixel_values'][0]
+                
+                if geo_processor is not None:
+                    if isinstance(geo_processor, SamProcessor):
+                        geo_image_mean = geo_processor.image_processor.image_mean
+                    else:
+                        geo_image_mean = geo_processor.image_mean
+                    geo_image_pil = expand2square(original_image, tuple(int(x*255) for x in geo_image_mean))
+                    geo_image = geo_processor(images=geo_image_pil, return_tensors="pt")['pixel_values'][0]
             else:
+                if geo_processor is not None:
+                    geo_image = geo_processor(images=original_image, return_tensors="pt")['pixel_values'][0]
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+
             sources = preprocess_multimodal(
                 copy.deepcopy([e["conversations"] for e in sources]),
                 self.data_args)
         else:
             sources = copy.deepcopy([e["conversations"] for e in sources])
+        
         data_dict = preprocess(
             sources,
             self.tokenizer,
-            has_image=('image' in self.list_data_dict[i]))
+            has_image=('image' in self.list_data_dict[i] and self.list_data_dict[i]['image'] != ""))
+        
         if isinstance(i, int):
             data_dict = dict(input_ids=data_dict["input_ids"][0],
                              labels=data_dict["labels"][0])
 
         # image exist in the data
-        if 'image' in self.list_data_dict[i]:
+        if 'image' in self.list_data_dict[i] and self.list_data_dict[i]['image'] != "":
             data_dict['images'] = image
+            if geo_image is not None:
+                data_dict['geo_images'] = geo_image
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
             data_dict['images'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+            
+            if self.data_args.geo_image_processor is not None:
+                if isinstance(self.data_args.geo_image_processor, SamProcessor):
+                    geo_crop_size = {'height': 1024, 'width': 1024}
+                else:
+                    geo_crop_size = self.data_args.geo_image_processor.size
+                data_dict['geo_images'] = torch.zeros(3, geo_crop_size['height'], geo_crop_size['width'])
+
+        # if every element in labels is IGNORE_INDEX: print warning
+        if (data_dict['labels'] == IGNORE_INDEX).all():
+            print(sources)
+            print(data_dict['labels'])
+            print(f"ERROR: Labels are all IGNORE_INDEX: {data_dict['labels']}")
+
         return data_dict
 
 
@@ -737,6 +810,13 @@ class DataCollatorForSupervisedDataset(object):
                 batch['images'] = torch.stack(images)
             else:
                 batch['images'] = images
+            
+        if 'geo_images' in instances[0]:
+            geo_images = [instance['geo_images'] for instance in instances]
+            if all(x is not None and x.shape == geo_images[0].shape for x in geo_images):
+                batch['images_for_geo'] = torch.stack(geo_images)
+            else:
+                batch['images_for_geo'] = geo_images
 
         return batch
 
@@ -780,7 +860,7 @@ def train():
                 bnb_4bit_quant_type=training_args.quant_type # {'fp4', 'nf4'}
             )
         ))
-
+    
     if model_args.vision_tower is not None:
         if 'mpt' in model_args.model_name_or_path:
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
@@ -791,6 +871,84 @@ def train():
                 cache_dir=training_args.cache_dir,
                 **bnb_model_from_pretrained_args
             )
+        elif 'llava_geo' in model_args.model_type:
+            if model_args.from_merged_lora_model and model_args.model_base is not None:
+                from transformers import AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
+                model_path = model_args.model_name_or_path
+                model_base = model_args.model_base
+                model_cls = MODEL_TYPE_TO_MODEL_CLASS[model_args.model_type]
+
+                config = AutoConfig.from_pretrained(model_path)
+                # tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
+                print('Loading from a lora base model...')
+                
+                # adding llava geo config
+                assert model_args.llava_geo_config_path is not None
+                llava_geo_config_dict = json.load(open(model_args.llava_geo_config_path, 'r'))
+                config.update(llava_geo_config_dict)
+                config.use_geo_image_features_only = model_args.use_geo_image_features_only
+                config._name_or_path = model_args.model_name_or_path
+
+                model = model_cls.from_pretrained(
+                    model_base, 
+                    config=config, 
+                    cache_dir=training_args.cache_dir,
+                    **bnb_model_from_pretrained_args
+                )
+                
+                token_num, tokem_dim = model.lm_head.out_features, model.lm_head.in_features
+                if model.lm_head.weight.shape[0] != token_num:
+                    rank0_print("Resizing lm_head and embed_tokens...")
+                    model.lm_head.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
+                    model.model.embed_tokens.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
+
+                print('Loading additional LLaVA Geo weights...')
+                if os.path.exists(os.path.join(model_path, 'non_lora_trainables.bin')):
+                    non_lora_trainables = torch.load(os.path.join(model_path, 'non_lora_trainables.bin'), map_location='cpu')
+                else:
+                    from huggingface_hub import hf_hub_download
+                    def load_from_hf(repo_id, filename, subfolder=None):
+                        cache_file = hf_hub_download(
+                            repo_id=repo_id,
+                            filename=filename,
+                            subfolder=subfolder)
+                        return torch.load(cache_file, map_location='cpu')
+                    non_lora_trainables = load_from_hf(model_path, 'non_lora_trainables.bin')
+                non_lora_trainables = {(k[11:] if k.startswith('base_model.') else k): v for k, v in non_lora_trainables.items()}
+                if any(k.startswith('model.model.') for k in non_lora_trainables):
+                    non_lora_trainables = {(k[6:] if k.startswith('model.') else k): v for k, v in non_lora_trainables.items()}
+                ret = model.load_state_dict(non_lora_trainables, strict=False)
+                print("Try loading non_lora_trainables:", non_lora_trainables.keys())
+                print("Unexpected keys not loaded from non_lora_trainables:", ret.unexpected_keys)
+                from peft import PeftModel
+                print('Loading LoRA weights...')
+                model = PeftModel.from_pretrained(model, model_path)
+                print('Merging LoRA weights...')
+                model = model.merge_and_unload()
+                print('Merged Lora Model is loaded...')
+            else:
+                model_cls = MODEL_TYPE_TO_MODEL_CLASS[model_args.model_type]
+                model_cfg = MODEL_TYPE_TO_CONFIG_CLASS[model_args.model_type]
+                
+                if "7b" in model_args.model_name_or_path:
+                    config = LlavaConfig.from_pretrained("liuhaotian/llava-v1.5-7b")
+                else:
+                    config = LlavaConfig.from_pretrained("liuhaotian/llava-v1.5-13b")
+                assert model_args.llava_geo_config_path is not None
+                llava_geo_config_dict = json.load(open(model_args.llava_geo_config_path, 'r'))
+
+                config.update(llava_geo_config_dict)
+                config.use_geo_image_features_only = model_args.use_geo_image_features_only
+                config._name_or_path = model_args.model_name_or_path
+
+                rank0_print("Model class:", model_cls)
+                rank0_print("Model Config:", config)
+                model = model_cls.from_pretrained(
+                    model_args.model_name_or_path,
+                    config=config,
+                    cache_dir=training_args.cache_dir,
+                    **bnb_model_from_pretrained_args
+                )
         else:
             model = LlavaLlamaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
@@ -798,11 +956,13 @@ def train():
                 **bnb_model_from_pretrained_args
             )
     else:
+        rank0_print("Loading text only model:", model_args.model_name_or_path)
         model = transformers.LlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             **bnb_model_from_pretrained_args
         )
+    
     model.config.use_cache = False
 
     if model_args.freeze_backbone:
@@ -822,11 +982,12 @@ def train():
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     if training_args.lora_enable:
+
         from peft import LoraConfig, get_peft_model
         lora_config = LoraConfig(
             r=training_args.lora_r,
             lora_alpha=training_args.lora_alpha,
-            target_modules=find_all_linear_names(model),
+            target_modules=find_all_linear_names(model), # lora only on linear layers
             lora_dropout=training_args.lora_dropout,
             bias=training_args.lora_bias,
             task_type="CAUSAL_LM",
@@ -838,6 +999,7 @@ def train():
                 model.to(torch.float16)
         rank0_print("Adding LoRA adapters...")
         model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
 
     if 'mpt' in model_args.model_name_or_path:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -847,8 +1009,11 @@ def train():
             padding_side="right"
         )
     else:
+        tokenizer_model_path = model_args.model_name_or_path
+        if model_args.model_base is not None:
+            tokenizer_model_path = model_args.model_base
         tokenizer = transformers.AutoTokenizer.from_pretrained(
-            model_args.model_name_or_path,
+            tokenizer_model_path,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
             padding_side="right",
@@ -881,22 +1046,64 @@ def train():
         vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
 
         data_args.image_processor = vision_tower.image_processor
+        if 'llava_geo' in model_args.model_type:
+            data_args.geo_image_processor = model.geo_image_processor
+        else:
+            data_args.geo_image_processor = None
+
+
         data_args.is_multimodal = True
 
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
         model.config.tokenizer_padding_side = tokenizer.padding_side
         model.config.tokenizer_model_max_length = tokenizer.model_max_length
 
+
+        if not training_args.lora_enable:
+            # first freeze all
+            model.requires_grad_(False)
+            # if tune llm: unfreeze llm and freeze all others
+            model.config.tune_llm = training_args.tune_llm = model_args.tune_llm
+            if model_args.tune_llm:
+                for p in model.get_model().parameters():
+                    p.requires_grad = True
+                for p in model.lm_head.parameters():
+                    p.requires_grad = True
+                for p in model.get_model().mm_projector.parameters():
+                    p.requires_grad = False
+                for p in model.get_model().vision_tower.parameters():
+                    p.requires_grad = False
+
+        # if unfreeze projection layer
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
         if model_args.tune_mm_mlp_adapter:
-            model.requires_grad_(False)
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
 
-        model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
-        if training_args.freeze_mm_mlp_adapter:
-            for p in model.get_model().mm_projector.parameters():
-                p.requires_grad = False
+        # if unfreeze mae to projection connection layers
+        model.config.tune_mae_adapter = training_args.tune_mae_adapter = model_args.tune_mae_adapter
+        if model.config.tune_mae_adapter:
+            for p in model.mae_enc_to_projection.parameters():
+                p.requires_grad = True
+            for p in model.projection_to_mae_dec.parameters():
+                p.requires_grad = True
+
+        # if unfreeze sam projection layer
+        model.config.tune_sam_adapter = training_args.tune_sam_adapter = model_args.tune_sam_adapter
+        if model.config.tune_sam_adapter:
+            if hasattr(model, 'geo_to_llm_projector'):
+                for p in model.geo_to_llm_projector.parameters():
+                    p.requires_grad = True
+            if hasattr(model, 'llm_to_geo_projector'):
+                for p in model.llm_to_geo_projector.parameters():
+                    p.requires_grad = True
+
+        # if unfreeze vision tower
+        model.config.tune_vision_tower = training_args.tune_vision_tower = model_args.tune_vision_tower
+        if model_args.tune_vision_tower:
+            for p in model.get_model().get_vision_tower().parameters():
+                p.requires_grad = True
+
 
         if training_args.bits in [4, 8]:
             model.get_model().mm_projector.to(dtype=compute_dtype, device=training_args.device)
@@ -906,6 +1113,7 @@ def train():
         training_args.use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
+
 
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer
@@ -922,12 +1130,52 @@ def train():
 
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
+
+    # print trainable params
+    rank0_print("Train dataset size:", len(data_module['train_dataset']))
+    rank0_print("Trainable params:")
+    trainable_param_size = 0
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            rank0_print(name)
+            trainable_param_size += param.numel()
+    if training_args.lora_enable:
+        model.print_trainable_parameters()
+    else:
+        rank0_print("Trainable params size (showing zero if using zero3 deepspeed):", trainable_param_size)
+
+
+    # save intermediate non-lora-trainables
+    from transformers import TrainerCallback
+    def save_non_lora_trainables(args, output_dir):
+        state_dict = get_peft_state_maybe_zero_3(
+            model.named_parameters(), args.lora_bias
+        )
+        non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(
+            model.named_parameters()
+        )
+        if args.local_rank in [-1, 0]:
+            model.config.save_pretrained(output_dir)
+            model.save_pretrained(output_dir, state_dict=state_dict)
+            torch.save(non_lora_state_dict, os.path.join(output_dir, 'non_lora_trainables.bin'))
+
+    class SaveCallback(TrainerCallback):
+        def on_save(self, args, state, control, **kwargs):
+            checkpoint_dir = os.path.join(args.output_dir, 'checkpoint-{}'.format(state.global_step))
+            if args.lora_enable:
+                save_non_lora_trainables(args, checkpoint_dir)
+
+
+    rank0_print("\n\nTraining arguments:", training_args)
+
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,
+                    callbacks=[SaveCallback()],
                     **data_module)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+        print("Resuming from checkpoint...")
         trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
@@ -936,19 +1184,12 @@ def train():
     model.config.use_cache = True
 
     if training_args.lora_enable:
-        state_dict = get_peft_state_maybe_zero_3(
-            model.named_parameters(), training_args.lora_bias
-        )
-        non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(
-            model.named_parameters()
-        )
-        if training_args.local_rank == 0 or training_args.local_rank == -1:
-            model.config.save_pretrained(training_args.output_dir)
-            model.save_pretrained(training_args.output_dir, state_dict=state_dict)
-            torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, 'non_lora_trainables.bin'))
+        save_non_lora_trainables(training_args, training_args.output_dir)
     else:
         safe_save_model_for_hf_trainer(trainer=trainer,
                                        output_dir=training_args.output_dir)
+
+
 
 
 if __name__ == "__main__":

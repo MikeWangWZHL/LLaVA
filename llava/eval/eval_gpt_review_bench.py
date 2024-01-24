@@ -4,15 +4,17 @@ import os
 
 import openai
 import time
+from openai import OpenAI
 
-NUM_SECONDS_TO_SLEEP = 0.5
+NUM_SECONDS_TO_SLEEP = 1
 
 
 def get_eval(content: str, max_tokens: int):
     while True:
         try:
-            response = openai.ChatCompletion.create(
-                model='gpt-4-0314',
+            client = OpenAI()
+            response = client.chat.completions.create(
+                model='gpt-4-1106-preview',
                 messages=[{
                     'role': 'system',
                     'content': 'You are a helpful and precise assistant for checking the quality of the answer.'
@@ -23,12 +25,11 @@ def get_eval(content: str, max_tokens: int):
                 temperature=0.2,  # TODO: figure out which temperature is best for evaluation
                 max_tokens=max_tokens,
             )
+            response = response.dict()
             break
-        except openai.error.RateLimitError:
-            pass
         except Exception as e:
             print(e)
-        time.sleep(NUM_SECONDS_TO_SLEEP)
+        time.sleep(NUM_SECONDS_TO_SLEEP * 10)
 
     return response['choices'][0]['message']['content']
 
@@ -109,6 +110,7 @@ if __name__ == '__main__':
         }
         if idx >= len(cur_reviews):
             review = get_eval(content, args.max_tokens)
+            time.sleep(NUM_SECONDS_TO_SLEEP)
             scores = parse_score(review)
             cur_js['content'] = review
             cur_js['tuple'] = scores

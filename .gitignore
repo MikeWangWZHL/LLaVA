@@ -7,8 +7,8 @@ dist
 # Log
 *.log
 *.log.*
-*.json
-*.jsonl
+# *.json
+# *.jsonl
 
 # Data
 !**/alpaca-data-conversation.json
@@ -26,10 +26,10 @@ checkpoints
 ckpts*
 
 .ipynb_checkpoints
-*.ipynb
+# *.ipynb
 
-# DevContainer
-!.devcontainer/*
+ncsa_logs/
 
-# Demo
-serve_images/
+*/setup_openai_api_key.sh
+
+playground/data/eval/
