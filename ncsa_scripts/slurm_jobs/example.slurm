@@ -54,3 +54,4 @@ srun python3 test_ncsa.py # init an interactive session
 
 # sbatch scripts/slurm/configs/finetune_4xA100_4tp.slurm
 # squeue -u $USER
+# scancel jobid

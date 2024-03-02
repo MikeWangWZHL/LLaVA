@@ -1,0 +1,4 @@
+# sbatch ncsa_scripts/slurm_jobs/svg_tasks/abstract_scene_dataset_img_2_scene_from_llava_stage2.slurm
+# sbatch ncsa_scripts/slurm_jobs/svg_tasks/maze_img_2_scene_from_llava_stage2.slurm
+# sbatch ncsa_scripts/slurm_jobs/svg_tasks/shapeworld_img_2_scene_from_llava_stage2.slurm
+sbatch ncsa_scripts/slurm_jobs/svg_tasks/clevr_medium_img_2_scene_from_llava_stage2.slurm
